@@ -1,48 +1,47 @@
-from flask import Flask, request, jsonify
+# Updated main.py with CIM processing - compatible with existing structure
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-import openai
 import whisper
+import openai
+from openai import OpenAI
+import os
+import tempfile
 import pandas as pd
 import PyPDF2
-from docx import Document
-import json
-import logging
-import traceback
-import tempfile
-import os
+import docx
 from datetime import datetime
-import fitz  # PyMuPDF for better PDF processing
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import json
+import traceback
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# Load OpenAI API key from environment
-openai.api_key = os.getenv('OPENAI_API_KEY')
-if not openai.api_key:
-    logger.warning("OpenAI API key not found in environment variables")
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-print("🚀 DealMate Agent Server Starting...")
+# Global variables for models
+whisper_model = None
 
-# Pre-load Whisper model for faster transcription
-print("⚡ Pre-loading Whisper model...")
-try:
-    whisper_model = whisper.load_model("base")
-    print("✅ Whisper model loaded successfully!")
-except Exception as e:
-    print(f"❌ Failed to load Whisper model: {e}")
-    whisper_model = None
+def load_whisper_model():
+    """Load Whisper model on startup"""
+    global whisper_model
+    try:
+        print("⚡ Pre-loading Whisper model...")
+        whisper_model = whisper.load_model("base")
+        print("✅ Whisper model loaded successfully!")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to load Whisper model: {e}")
+        return False
 
-@app.route('/')
+@app.route('/', methods=['GET'])
 def root():
-    """Root endpoint with API documentation"""
+    """Root endpoint with server information"""
     return jsonify({
         "service": "DealMate AI Agent Server",
         "version": "1.0.0",
         "status": "running",
+        "timestamp": datetime.now().isoformat(),
         "endpoints": {
             "health": "/health",
             "transcribe": "/transcribe (POST)",
@@ -54,30 +53,20 @@ def root():
         "description": "AI-powered due diligence platform for M&A professionals"
     })
 
-@app.route('/health')
+@app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    try:
-        # Check OpenAI API
-        openai_status = "configured" if openai.api_key else "not_configured"
-        
-        # Check Whisper model
-        whisper_status = "ready" if whisper_model else "not_loaded"
-        
-        return jsonify({
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "services": {
-                "openai": openai_status,
-                "whisper": whisper_status
-            }
-        })
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return jsonify({
-            "status": "unhealthy",
-            "error": str(e)
-        }), 500
+    openai_status = "configured" if os.getenv('OPENAI_API_KEY') else "missing_key"
+    whisper_status = "ready" if whisper_model else "not_loaded"
+    
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "services": {
+            "openai": openai_status,
+            "whisper": whisper_status
+        }
+    })
 
 @app.route('/transcribe', methods=['POST'])
 def transcribe_audio():
@@ -89,42 +78,39 @@ def transcribe_audio():
         file = request.files['file']
         deal_id = request.form.get('deal_id', 'unknown')
         
-        if not whisper_model:
-            return jsonify({"error": "Whisper model not available"}), 500
+        if file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
         
         # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.audio') as temp_file:
-            file.save(temp_file.name)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_file:
+            file.save(tmp_file.name)
             
-            try:
-                # Transcribe audio
-                logger.info(f"Transcribing audio file for deal {deal_id}")
-                result = whisper_model.transcribe(temp_file.name)
+            # Transcribe using Whisper
+            if whisper_model:
+                result = whisper_model.transcribe(tmp_file.name)
+                
+                # Clean up temp file
+                os.unlink(tmp_file.name)
                 
                 return jsonify({
                     "success": True,
-                    "transcript": result["text"],
-                    "segments": result.get("segments", []),
-                    "language": result.get("language", "unknown"),
                     "deal_id": deal_id,
-                    "processing_time": "completed"
+                    "filename": file.filename,
+                    "transcription": result["text"],
+                    "segments": result.get("segments", []),
+                    "processing_time": result.get("processing_time", 0)
                 })
-                
-            finally:
-                # Clean up temporary file
-                os.unlink(temp_file.name)
+            else:
+                return jsonify({"error": "Whisper model not loaded"}), 500
                 
     except Exception as e:
-        logger.error(f"Audio transcription failed: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        print(f"Transcription error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/process-excel', methods=['POST'])
 def process_excel():
-    """Process Excel files for financial metrics extraction"""
+    """Process Excel files for financial metrics"""
     try:
         if 'file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
@@ -132,189 +118,106 @@ def process_excel():
         file = request.files['file']
         deal_id = request.form.get('deal_id', 'unknown')
         
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
-            file.save(temp_file.name)
+        # Save and read Excel file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+            file.save(tmp_file.name)
             
-            try:
-                # Read Excel file
-                logger.info(f"Processing Excel file for deal {deal_id}")
-                excel_data = pd.read_excel(temp_file.name, sheet_name=None, nrows=50)
-                
-                # Process each sheet
-                sheets_data = {}
-                for sheet_name, df in excel_data.items():
-                    # Convert to JSON-serializable format
-                    sheets_data[sheet_name] = {
-                        "columns": df.columns.tolist(),
-                        "data": df.fillna("").to_dict('records')[:20],  # Limit rows
-                        "shape": df.shape
-                    }
-                
-                # Prepare data for AI analysis
-                data_summary = ""
-                for sheet_name, sheet_info in sheets_data.items():
-                    data_summary += f"\nSheet: {sheet_name}\n"
-                    data_summary += f"Columns: {', '.join(sheet_info['columns'])}\n"
-                    data_summary += f"Rows: {sheet_info['shape'][0]}\n"
-                    
-                    # Add sample data
-                    if sheet_info['data']:
-                        data_summary += "Sample data:\n"
-                        for i, row in enumerate(sheet_info['data'][:5]):
-                            data_summary += f"Row {i+1}: {str(row)}\n"
-                
-                # AI Analysis
-                ai_analysis = None
-                if openai.api_key:
-                    try:
-                        prompt = f"""
-                        Analyze this Excel financial data and extract key metrics:
-                        
-                        {data_summary}
-                        
-                        Please provide a JSON response with:
-                        {{
-                            "financial_metrics": {{
-                                "revenue": {{"monthly": [], "annual": null}},
-                                "expenses": {{"monthly": [], "annual": null}},
-                                "profit": {{"monthly": [], "annual": null}},
-                                "growth_rate": {{"monthly": [], "annual": null}}
-                            }},
-                            "key_insights": [],
-                            "data_quality": "high/medium/low",
-                            "recommendations": []
-                        }}
-                        
-                        Extract actual numbers where possible and calculate growth rates.
-                        """
-                        
-                        response = openai.ChatCompletion.create(
-                            model="gpt-3.5-turbo",
-                            messages=[{"role": "user", "content": prompt}],
-                            max_tokens=1500,
-                            temperature=0.3
-                        )
-                        
-                        ai_analysis = response.choices[0].message.content
-                        logger.info("OpenAI processing completed")
-                        
-                    except Exception as ai_error:
-                        logger.error(f"OpenAI processing failed: {ai_error}")
-                        ai_analysis = f"AI analysis failed: {str(ai_error)}"
-                
-                return jsonify({
-                    "success": True,
-                    "deal_id": deal_id,
-                    "sheets": list(sheets_data.keys()),
-                    "raw_data_preview": sheets_data,
-                    "ai_analysis": ai_analysis,
-                    "processing_time": "completed"
-                })
-                
-            finally:
-                # Clean up temporary file
-                os.unlink(temp_file.name)
-                
+            # Read Excel file
+            excel_data = pd.read_excel(tmp_file.name, sheet_name=None)  # Read all sheets
+            
+            # Extract basic financial metrics using AI
+            sheets_content = []
+            for sheet_name, df in excel_data.items():
+                sheets_content.append(f"Sheet: {sheet_name}\n{df.head(10).to_string()}")
+            
+            excel_summary = "\n\n".join(sheets_content)
+            
+            # Use OpenAI to extract metrics
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a financial analyst. Extract key financial metrics from this Excel data. Return structured JSON with revenue, EBITDA, growth rates, and other key metrics."},
+                    {"role": "user", "content": f"Extract financial metrics from this Excel data:\n\n{excel_summary[:4000]}"}
+                ],
+                temperature=0.1
+            )
+            
+            # Clean up temp file
+            os.unlink(tmp_file.name)
+            
+            return jsonify({
+                "success": True,
+                "deal_id": deal_id,
+                "filename": file.filename,
+                "sheets": list(excel_data.keys()),
+                "ai_analysis": response.choices[0].message.content,
+                "raw_data_preview": sheets_content[0][:500] if sheets_content else ""
+            })
+            
     except Exception as e:
-        logger.error(f"Excel processing failed: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        print(f"Excel processing error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/process-document', methods=['POST'])
 def process_document():
-    """Process PDF/DOCX documents for business analysis"""
+    """Process PDF/Word documents for business analysis"""
     try:
         if 'file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
         
         file = request.files['file']
         deal_id = request.form.get('deal_id', 'unknown')
-        filename = file.filename.lower()
         
         # Extract text based on file type
-        extracted_text = ""
+        text_content = ""
         
-        if filename.endswith('.pdf'):
-            # Use PyMuPDF for better PDF processing
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-                file.save(temp_file.name)
-                try:
-                    doc = fitz.open(temp_file.name)
-                    for page in doc:
-                        extracted_text += page.get_text()
-                    doc.close()
-                finally:
-                    os.unlink(temp_file.name)
-                    
-        elif filename.endswith(('.docx', '.doc')):
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as temp_file:
-                file.save(temp_file.name)
-                try:
-                    doc = Document(temp_file.name)
-                    for paragraph in doc.paragraphs:
-                        extracted_text += paragraph.text + "\n"
-                finally:
-                    os.unlink(temp_file.name)
+        if file.filename.lower().endswith('.pdf'):
+            # Process PDF
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                file.save(tmp_file.name)
+                
+                with open(tmp_file.name, 'rb') as pdf_file:
+                    pdf_reader = PyPDF2.PdfReader(pdf_file)
+                    for page in pdf_reader.pages:
+                        text_content += page.extract_text()
+                
+                os.unlink(tmp_file.name)
         
-        # Limit text length for API
-        if len(extracted_text) > 15000:
-            extracted_text = extracted_text[:15000] + "..."
+        elif file.filename.lower().endswith(('.docx', '.doc')):
+            # Process Word document
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
+                file.save(tmp_file.name)
+                
+                doc = docx.Document(tmp_file.name)
+                for paragraph in doc.paragraphs:
+                    text_content += paragraph.text + "\n"
+                
+                os.unlink(tmp_file.name)
         
-        # AI Analysis
-        ai_analysis = None
-        if openai.api_key and extracted_text:
-            try:
-                prompt = f"""
-                Analyze this business document and provide key insights:
-                
-                Document Text:
-                {extracted_text}
-                
-                Please provide analysis covering:
-                1. Business model and revenue streams
-                2. Market position and competitive advantages
-                3. Financial performance indicators
-                4. Key risks and concerns
-                5. Growth opportunities
-                6. Management team assessment (if mentioned)
-                
-                Format as structured JSON with clear sections.
-                """
-                
-                response = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=2000,
-                    temperature=0.3
-                )
-                
-                ai_analysis = response.choices[0].message.content
-                logger.info("Document analysis completed")
-                
-            except Exception as ai_error:
-                logger.error(f"Document AI analysis failed: {ai_error}")
-                ai_analysis = f"AI analysis failed: {str(ai_error)}"
+        # Use OpenAI to analyze document
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are an M&A analyst. Analyze this business document and extract key insights including company overview, market position, financial highlights, risks, and opportunities. Return structured analysis."},
+                {"role": "user", "content": f"Analyze this business document:\n\n{text_content[:4000]}"}
+            ],
+            temperature=0.1
+        )
         
         return jsonify({
             "success": True,
             "deal_id": deal_id,
-            "text_length": len(extracted_text),
-            "extracted_text": extracted_text[:2000] + "..." if len(extracted_text) > 2000 else extracted_text,
-            "ai_analysis": ai_analysis,
-            "processing_time": "completed"
+            "filename": file.filename,
+            "text_length": len(text_content),
+            "ai_analysis": response.choices[0].message.content,
+            "text_preview": text_content[:500]
         })
         
     except Exception as e:
-        logger.error(f"Document processing failed: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        print(f"Document processing error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/process-cim', methods=['POST'])
 def process_cim():
@@ -326,191 +229,171 @@ def process_cim():
         file = request.files['file']
         deal_id = request.form.get('deal_id', 'unknown')
         
-        # Extract text from CIM PDF
-        extracted_text = ""
+        # Extract text from CIM PDF using PyPDF2 (consistent with existing code)
+        text_content = ""
         page_count = 0
         
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-            file.save(temp_file.name)
-            try:
-                doc = fitz.open(temp_file.name)
-                page_count = len(doc)
+        if file.filename.lower().endswith('.pdf'):
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                file.save(tmp_file.name)
                 
-                # Extract text from all pages for comprehensive analysis
-                for page in doc:
-                    extracted_text += page.get_text()
-                doc.close()
-            finally:
-                os.unlink(temp_file.name)
+                with open(tmp_file.name, 'rb') as pdf_file:
+                    pdf_reader = PyPDF2.PdfReader(pdf_file)
+                    page_count = len(pdf_reader.pages)
+                    
+                    # Extract text from all pages for comprehensive CIM analysis
+                    for page in pdf_reader.pages:
+                        text_content += page.extract_text()
+                
+                os.unlink(tmp_file.name)
+        else:
+            return jsonify({"error": "CIM processing only supports PDF files"}), 400
         
         # Limit text for API but keep more for CIM analysis
-        if len(extracted_text) > 25000:
-            extracted_text = extracted_text[:25000] + "..."
+        analysis_text = text_content[:20000] if len(text_content) > 20000 else text_content
         
-        # Specialized CIM Analysis
-        ai_analysis = None
-        if openai.api_key and extracted_text:
-            try:
-                cim_prompt = f"""
-                Analyze this Confidential Information Memorandum (CIM) and provide comprehensive investment analysis:
-                
-                CIM Document Text:
-                {extracted_text}
-                
-                Please provide a detailed JSON analysis with these sections:
+        # Specialized CIM Analysis using OpenAI
+        cim_prompt = f"""
+        Analyze this Confidential Information Memorandum (CIM) and provide comprehensive investment analysis.
+        
+        CIM Document Text:
+        {analysis_text}
+        
+        Please provide a detailed JSON analysis with these sections:
+        {{
+            "investment_grade": "A+/A/A-/B+/B/B-/C+/C/C-/D+/D/F",
+            "executive_summary": "Brief overview of the investment opportunity",
+            "business_model": {{
+                "type": "Description of business model",
+                "revenue_streams": ["stream1", "stream2"],
+                "key_value_propositions": ["prop1", "prop2"]
+            }},
+            "financial_metrics": {{
+                "revenue_cagr": "X.X%",
+                "ebitda_margin": "X.X%",
+                "deal_size_estimate": "$XXM",
+                "revenue_multiple": "X.Xx",
+                "ebitda_multiple": "X.Xx"
+            }},
+            "key_risks": [
                 {{
-                    "investment_grade": "A+/A/A-/B+/B/B-/C+/C/C-/D+/D/F",
-                    "executive_summary": "Brief overview of the investment opportunity",
-                    "business_model": {{
-                        "type": "Description of business model",
-                        "revenue_streams": [],
-                        "key_value_propositions": []
-                    }},
-                    "financial_metrics": {{
-                        "revenue_cagr": "X.X%",
-                        "ebitda_margin": "X.X%",
-                        "deal_size_estimate": "$XXM",
-                        "historical_performance": {{}}
-                    }},
-                    "key_risks": [
-                        {{
-                            "risk": "Risk description",
-                            "severity": "High/Medium/Low",
-                            "impact": "Description of potential impact"
-                        }}
-                    ],
-                    "investment_highlights": [
-                        "Key positive points for investment"
-                    ],
-                    "management_questions": [
-                        "Critical questions to ask management"
-                    ],
-                    "competitive_position": {{
-                        "strengths": [],
-                        "weaknesses": [],
-                        "market_position": "Description"
-                    }},
-                    "recommendation": {{
-                        "action": "Pursue/Pass/More Info Needed",
-                        "rationale": "Explanation of recommendation"
-                    }}
+                    "risk": "Risk description",
+                    "severity": "High/Medium/Low",
+                    "impact": "Description of potential impact"
                 }}
-                
-                Focus on:
-                - Extracting actual financial numbers where available
-                - Identifying red flags and risk factors
-                - Assessing market position and competitive advantages
-                - Evaluating management team and governance
-                - Analyzing growth prospects and scalability
-                """
-                
-                response = openai.ChatCompletion.create(
-                    model="gpt-4",  # Use GPT-4 for more sophisticated CIM analysis
-                    messages=[{"role": "user", "content": cim_prompt}],
-                    max_tokens=3000,
-                    temperature=0.2  # Lower temperature for more consistent analysis
+            ],
+            "investment_highlights": [
+                "Key positive points for investment"
+            ],
+            "management_questions": [
+                "Critical questions to ask management in due diligence"
+            ],
+            "competitive_position": {{
+                "strengths": ["strength1", "strength2"],
+                "weaknesses": ["weakness1", "weakness2"],
+                "market_position": "Description"
+            }},
+            "recommendation": {{
+                "action": "Pursue/Pass/More Info Needed",
+                "rationale": "Explanation of recommendation"
+            }}
+        }}
+        
+        Focus on extracting actual financial numbers, identifying red flags, assessing market position, and providing investment-grade analysis.
+        """
+        
+        try:
+            # Use GPT-4 for sophisticated CIM analysis if available, otherwise GPT-3.5-turbo
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a senior M&A analyst with 15+ years of experience reviewing CIMs. Provide institutional-quality investment analysis."},
+                    {"role": "user", "content": cim_prompt}
+                ],
+                temperature=0.2,
+                max_tokens=3000
+            )
+            
+            ai_analysis = response.choices[0].message.content
+            print("✅ CIM analysis completed with GPT-4")
+            
+        except Exception as gpt4_error:
+            print(f"GPT-4 failed, falling back to GPT-3.5-turbo: {gpt4_error}")
+            # Fallback to GPT-3.5-turbo
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a senior M&A analyst. Provide institutional-quality investment analysis of this CIM."},
+                        {"role": "user", "content": cim_prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=2500
                 )
-                
                 ai_analysis = response.choices[0].message.content
-                logger.info("CIM analysis completed")
+                print("✅ CIM analysis completed with GPT-3.5-turbo fallback")
                 
-            except Exception as ai_error:
-                logger.error(f"CIM AI analysis failed: {ai_error}")
-                # Fallback to GPT-3.5 if GPT-4 fails
-                try:
-                    response = openai.ChatCompletion.create(
-                        model="gpt-3.5-turbo",
-                        messages=[{"role": "user", "content": cim_prompt}],
-                        max_tokens=2500,
-                        temperature=0.2
-                    )
-                    ai_analysis = response.choices[0].message.content
-                    logger.info("CIM analysis completed with GPT-3.5 fallback")
-                except Exception as fallback_error:
-                    logger.error(f"CIM fallback analysis failed: {fallback_error}")
-                    ai_analysis = f"AI analysis failed: {str(ai_error)}"
+            except Exception as fallback_error:
+                print(f"Both GPT-4 and GPT-3.5-turbo failed: {fallback_error}")
+                ai_analysis = f"AI analysis failed: {str(gpt4_error)}"
         
         return jsonify({
             "success": True,
             "deal_id": deal_id,
+            "filename": file.filename,
             "document_type": "CIM",
             "page_count": page_count,
-            "text_length": len(extracted_text),
+            "text_length": len(text_content),
             "ai_analysis": ai_analysis,
             "processing_time": "completed",
             "analysis_type": "comprehensive_cim"
         })
         
     except Exception as e:
-        logger.error(f"CIM processing failed: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        print(f"CIM processing error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/generate-memo', methods=['POST'])
 def generate_memo():
-    """Generate investment memo from processed deal data"""
+    """Generate investment memo from processed data"""
     try:
         data = request.get_json()
         deal_id = data.get('deal_id')
         sections = data.get('sections', ['executive_summary', 'financial_analysis', 'risks', 'recommendation'])
         
-        if not deal_id:
-            return jsonify({"error": "Deal ID is required"}), 400
-        
-        # This would typically fetch processed data from your database
-        # For now, return a template structure
-        
-        memo_prompt = f"""
-        Generate an investment memo for deal {deal_id} with the following sections: {', '.join(sections)}
-        
-        The memo should be professional and suitable for investment committee review.
-        Include specific financial metrics, risk assessments, and clear recommendations.
-        """
-        
-        ai_memo = None
-        if openai.api_key:
-            try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": memo_prompt}],
-                    max_tokens=2000,
-                    temperature=0.3
-                )
-                
-                ai_memo = response.choices[0].message.content
-                logger.info("Investment memo generated")
-                
-            except Exception as ai_error:
-                logger.error(f"Memo generation failed: {ai_error}")
-                ai_memo = f"Memo generation failed: {str(ai_error)}"
+        # This is a simplified version - in a full implementation, 
+        # you'd retrieve processed data from a database
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": f"You are an investment professional. Generate a professional investment memo with these sections: {', '.join(sections)}. Use formal business language suitable for an investment committee."},
+                {"role": "user", "content": f"Generate an investment memo for deal {deal_id}. Include analysis of the business model, financial performance, market opportunity, risks, and investment recommendation."}
+            ],
+            temperature=0.1
+        )
         
         return jsonify({
             "success": True,
             "deal_id": deal_id,
-            "memo": ai_memo,
+            "memo": response.choices[0].message.content,
             "sections": sections,
             "generated_at": datetime.now().isoformat()
         })
         
     except Exception as e:
-        logger.error(f"Memo generation failed: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({"error": "Endpoint not found"}), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({"error": "Internal server error"}), 500
+        print(f"Memo generation error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
+    print("🚀 DealMate Agent Server Starting...")
+    
+    # Load Whisper model
+    whisper_loaded = load_whisper_model()
+    
+    if not whisper_loaded:
+        print("⚠️  Whisper model failed to load, audio transcription won't work")
+    
     print("✅ Server ready!")
     app.run(host='0.0.0.0', port=8000, debug=False)
