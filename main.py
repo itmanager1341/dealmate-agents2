@@ -221,136 +221,89 @@ def process_document():
 
 @app.route('/process-cim', methods=['POST'])
 def process_cim():
-    """Process CIM (Confidential Information Memorandum) documents with specialized analysis"""
+    """Process CIM with multi-agent architecture and write to Supabase"""
     try:
+        from orchestrator.cim_orchestrator import CIMOrchestrator
+        from orchestrator.supabase import supabase
+        import tempfile
+        import os
+
         if 'file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
-        
+
         file = request.files['file']
         deal_id = request.form.get('deal_id', 'unknown')
-        
-        # Extract text from CIM PDF using PyPDF2 (consistent with existing code)
-        text_content = ""
-        page_count = 0
-        
-        if file.filename.lower().endswith('.pdf'):
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                file.save(tmp_file.name)
-                
-                with open(tmp_file.name, 'rb') as pdf_file:
-                    pdf_reader = PyPDF2.PdfReader(pdf_file)
-                    page_count = len(pdf_reader.pages)
-                    
-                    # Extract text from all pages for comprehensive CIM analysis
-                    for page in pdf_reader.pages:
-                        text_content += page.extract_text()
-                
-                os.unlink(tmp_file.name)
-        else:
-            return jsonify({"error": "CIM processing only supports PDF files"}), 400
-        
-        # Limit text for API but keep more for CIM analysis
-        analysis_text = text_content[:20000] if len(text_content) > 20000 else text_content
-        
-        # Specialized CIM Analysis using OpenAI
-        cim_prompt = f"""
-        Analyze this Confidential Information Memorandum (CIM) and provide comprehensive investment analysis.
-        
-        CIM Document Text:
-        {analysis_text}
-        
-        Please provide a detailed JSON analysis with these sections:
-        {{
-            "investment_grade": "A+/A/A-/B+/B/B-/C+/C/C-/D+/D/F",
-            "executive_summary": "Brief overview of the investment opportunity",
-            "business_model": {{
-                "type": "Description of business model",
-                "revenue_streams": ["stream1", "stream2"],
-                "key_value_propositions": ["prop1", "prop2"]
-            }},
-            "financial_metrics": {{
-                "revenue_cagr": "X.X%",
-                "ebitda_margin": "X.X%",
-                "deal_size_estimate": "$XXM",
-                "revenue_multiple": "X.Xx",
-                "ebitda_multiple": "X.Xx"
-            }},
-            "key_risks": [
-                {{
-                    "risk": "Risk description",
-                    "severity": "High/Medium/Low",
-                    "impact": "Description of potential impact"
-                }}
-            ],
-            "investment_highlights": [
-                "Key positive points for investment"
-            ],
-            "management_questions": [
-                "Critical questions to ask management in due diligence"
-            ],
-            "competitive_position": {{
-                "strengths": ["strength1", "strength2"],
-                "weaknesses": ["weakness1", "weakness2"],
-                "market_position": "Description"
-            }},
-            "recommendation": {{
-                "action": "Pursue/Pass/More Info Needed",
-                "rationale": "Explanation of recommendation"
-            }}
-        }}
-        
-        Focus on extracting actual financial numbers, identifying red flags, assessing market position, and providing investment-grade analysis.
-        """
-        
-        try:
-            # Use GPT-4 for sophisticated CIM analysis if available, otherwise GPT-3.5-turbo
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a senior M&A analyst with 15+ years of experience reviewing CIMs. Provide institutional-quality investment analysis."},
-                    {"role": "user", "content": cim_prompt}
-                ],
-                temperature=0.2,
-                max_tokens=3000
-            )
-            
-            ai_analysis = response.choices[0].message.content
-            print("✅ CIM analysis completed with GPT-4")
-            
-        except Exception as gpt4_error:
-            print(f"GPT-4 failed, falling back to GPT-3.5-turbo: {gpt4_error}")
-            # Fallback to GPT-3.5-turbo
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a senior M&A analyst. Provide institutional-quality investment analysis of this CIM."},
-                        {"role": "user", "content": cim_prompt}
-                    ],
-                    temperature=0.2,
-                    max_tokens=2500
-                )
-                ai_analysis = response.choices[0].message.content
-                print("✅ CIM analysis completed with GPT-3.5-turbo fallback")
-                
-            except Exception as fallback_error:
-                print(f"Both GPT-4 and GPT-3.5-turbo failed: {fallback_error}")
-                ai_analysis = f"AI analysis failed: {str(gpt4_error)}"
-        
+
+        if file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+
+        # Save file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            file_path = tmp_file.name
+            file.save(file_path)
+
+        # Run multi-agent orchestrator
+        orchestrator = CIMOrchestrator()
+        result = orchestrator.run_all(file_path=file_path, deal_id=deal_id)
+
+        # Remove file after use
+        os.remove(file_path)
+
+        # Collect inserts
+        inserted = {
+            "deal_metrics": [],
+            "ai_outputs": [],
+            "cim_analysis": [],
+            "agent_logs": []
+        }
+
+        # Write deal_metrics
+        metrics = result["results"]["financial"].get("output", [])
+        for m in metrics:
+            m["deal_id"] = deal_id
+            inserted["deal_metrics"].append(m)
+        supabase.table("deal_metrics").insert(inserted["deal_metrics"]).execute()
+
+        # Write ai_outputs (risks + consistency)
+        for key in ["risk", "consistency"]:
+            items = result["results"][key].get("output", {}).get("items", [])
+            for item in items:
+                inserted["ai_outputs"].append({
+                    "deal_id": deal_id,
+                    "agent_type": f"{key}_agent",
+                    "output_type": result["results"][key]["output_type"],
+                    "output_json": item
+                })
+        supabase.table("ai_outputs").insert(inserted["ai_outputs"]).execute()
+
+        # Write cim_analysis (memo block)
+        memo = result["results"]["memo"].get("output", {})
+        memo["deal_id"] = deal_id
+        inserted["cim_analysis"].append(memo)
+        supabase.table("cim_analysis").insert(inserted["cim_analysis"]).execute()
+
+        # Write agent_logs
+        for agent_name, logs in result.get("logs", {}).items():
+            inserted["agent_logs"].append({
+                "deal_id": deal_id,
+                "agent_name": agent_name,
+                "input_payload": "CIM text (omitted for brevity)",
+                "output_payload": result["results"].get(agent_name, {}).get("output"),
+                "status": "success" if result["results"].get(agent_name, {}).get("success") else "failed",
+                "error_message": result["results"].get(agent_name, {}).get("error", None)
+            })
+        supabase.table("agent_logs").insert(inserted["agent_logs"]).execute()
+
         return jsonify({
             "success": True,
             "deal_id": deal_id,
-            "filename": file.filename,
-            "document_type": "CIM",
-            "page_count": page_count,
-            "text_length": len(text_content),
-            "ai_analysis": ai_analysis,
-            "processing_time": "completed",
-            "analysis_type": "comprehensive_cim"
+            "message": "CIM processed and stored",
+            "status": result.get("status", "complete"),
+            "errors": result.get("errors", []),
+            "written": {k: len(v) for k, v in inserted.items()}
         })
-        
+
     except Exception as e:
-        print(f"CIM processing error: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
