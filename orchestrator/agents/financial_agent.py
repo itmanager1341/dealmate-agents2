@@ -16,15 +16,18 @@ class FinancialAgent(BaseAgent):
 
     def build_prompt(self, document_text, context={}):
         """
-        Constructs the prompt sent to the LLM. Focuses only on extracting structured KPIs.
+        Constructs the prompt sent to the LLM. Focuses on extracting structured KPIs.
         """
         return [
             {
                 "role": "system",
                 "content": (
                     "You are a private equity analyst. Extract key financial metrics from the provided text. "
-                    "Only use data explicitly found in the text. Do not assume values. Format the output as structured JSON. "
-                    "Include the original sentence or source text next to each metric for traceability."
+                    "Pay special attention to tables and charts, which often contain the most important metrics. "
+                    "Look for metrics in both narrative text and structured data. "
+                    "Only use data explicitly found in the text. Do not assume values. "
+                    "Format the output as structured JSON. "
+                    "Include the original sentence, table row, or source text next to each metric for traceability."
                 )
             },
             {
@@ -74,16 +77,43 @@ class FinancialAgent(BaseAgent):
         for key, value in parsed.items():
             # Normalize keys for standard metric naming
             normalized_name = key.replace("_", " ").title()
-            unit = self._infer_unit(value)
+            
+            # Handle both string and numeric values
+            if isinstance(value, (int, float)):
+                metric_value = value
+                unit = self._infer_unit_from_name(normalized_name)
+                source_text = f"Extracted from table or chart: {normalized_name}"
+            else:
+                metric_value = self._extract_numeric_value(value)
+                unit = self._infer_unit(value)
+                source_text = value if isinstance(value, str) else ""
+            
+            # Skip if no valid numeric value found
+            if metric_value is None:
+                continue
+                
             metric = {
                 "metric_name": normalized_name,
-                "metric_value": self._extract_numeric_value(value),
+                "metric_value": metric_value,
                 "metric_unit": unit,
-                "source_text": value if isinstance(value, str) else "",
+                "source_text": source_text,
                 "pinned": True
             }
             metric_list.append(metric)
         return metric_list
+
+    def _infer_unit_from_name(self, metric_name):
+        """
+        Infers unit from metric name when value is already numeric
+        """
+        name_lower = metric_name.lower()
+        if any(x in name_lower for x in ["revenue", "ebitda", "income", "cash flow"]):
+            return "USD"
+        if any(x in name_lower for x in ["margin", "growth", "cagr"]):
+            return "%"
+        if any(x in name_lower for x in ["multiple"]):
+            return "Multiple"
+        return ""
 
     def _extract_numeric_value(self, val):
         """
@@ -91,13 +121,51 @@ class FinancialAgent(BaseAgent):
         """
         if isinstance(val, (int, float)):
             return val
-        match = re.search(r"[\d\.\,]+", val.replace(",", ""))
-        if not match:
-            return None
-        try:
-            return float(match.group())
-        except:
-            return None
+            
+        # Handle common number formats
+        val = val.replace(",", "")
+        
+        # Handle currency values
+        if "$" in val:
+            val = val.replace("$", "")
+            if "M" in val or "million" in val.lower():
+                val = val.replace("M", "").replace("million", "")
+                try:
+                    return float(val) * 1000000
+                except:
+                    pass
+            if "B" in val or "billion" in val.lower():
+                val = val.replace("B", "").replace("billion", "")
+                try:
+                    return float(val) * 1000000000
+                except:
+                    pass
+                    
+        # Handle percentages
+        if "%" in val:
+            val = val.replace("%", "")
+            try:
+                return float(val) / 100
+            except:
+                pass
+                
+        # Handle multipliers
+        if "x" in val:
+            val = val.replace("x", "")
+            try:
+                return float(val)
+            except:
+                pass
+                
+        # Try to extract any number
+        match = re.search(r"[\d\.]+", val)
+        if match:
+            try:
+                return float(match.group())
+            except:
+                pass
+                
+        return None
 
     def _infer_unit(self, val):
         """
