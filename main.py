@@ -259,22 +259,74 @@ def process_cim():
 
         # Write deal_metrics
         metrics = result["results"]["financial"].get("output", [])
-        for m in metrics:
-            m["deal_id"] = deal_id
-            inserted["deal_metrics"].append(m)
+        if isinstance(metrics, list):
+            for m in metrics:
+                if isinstance(m, dict):
+                    m["deal_id"] = deal_id
+                    inserted["deal_metrics"].append(m)
+                else:
+                    print(f"❌ Invalid metric format: {m}")
+                    inserted["agent_logs"].append({
+                        "deal_id": deal_id,
+                        "agent_name": "financial_agent",
+                        "input_payload": "CIM text (omitted for brevity)",
+                        "output_payload": str(m),
+                        "status": "failed",
+                        "error_message": "Invalid metric format - expected dictionary"
+                    })
+        else:
+            print(f"❌ Financial metrics is not a list: {metrics}")
+            inserted["agent_logs"].append({
+                "deal_id": deal_id,
+                "agent_name": "financial_agent",
+                "input_payload": "CIM text (omitted for brevity)",
+                "output_payload": str(metrics),
+                "status": "failed",
+                "error_message": "Invalid metrics format - expected list"
+            })
+            if "errors" not in result:
+                result["errors"] = []
+            result["errors"].append("Financial agent returned invalid output format")
+
         if inserted["deal_metrics"]:
             supabase.table("deal_metrics").insert(inserted["deal_metrics"]).execute()
 
         # Write ai_outputs (risks + consistency)
         for key in ["risk", "consistency"]:
-            items = result["results"][key].get("output", {}).get("items", [])
-            for item in items:
-                inserted["ai_outputs"].append({
+            output = result["results"][key].get("output", {})
+            if isinstance(output, dict) and "items" in output:
+                for item in output["items"]:
+                    if isinstance(item, dict):
+                        inserted["ai_outputs"].append({
+                            "deal_id": deal_id,
+                            "agent_type": f"{key}_agent",
+                            "output_type": output.get("output_type", f"{key}_summary"),
+                            "output_json": item
+                        })
+                    else:
+                        print(f"❌ Invalid {key} item format: {item}")
+                        inserted["agent_logs"].append({
+                            "deal_id": deal_id,
+                            "agent_name": f"{key}_agent",
+                            "input_payload": "CIM text (omitted for brevity)",
+                            "output_payload": str(item),
+                            "status": "failed",
+                            "error_message": f"Invalid {key} item format - expected dictionary"
+                        })
+            else:
+                print(f"❌ Invalid {key} output format: {output}")
+                inserted["agent_logs"].append({
                     "deal_id": deal_id,
-                    "agent_type": f"{key}_agent",
-                    "output_type": result["results"][key]["output_type"],
-                    "output_json": item
+                    "agent_name": f"{key}_agent",
+                    "input_payload": "CIM text (omitted for brevity)",
+                    "output_payload": str(output),
+                    "status": "failed",
+                    "error_message": f"Invalid {key} output format - expected dict with items"
                 })
+                if "errors" not in result:
+                    result["errors"] = []
+                result["errors"].append(f"{key.title()} agent returned invalid output format")
+
         if inserted["ai_outputs"]:
             supabase.table("ai_outputs").insert(inserted["ai_outputs"]).execute()
 
@@ -287,18 +339,16 @@ def process_cim():
                 supabase.table("cim_analysis").insert(inserted["cim_analysis"]).execute()
         else:
             print(f"❌ Memo output is not a dictionary: {memo_output}")
-            # Add error to the response
             if "errors" not in result:
                 result["errors"] = []
             result["errors"].append("Memo agent returned invalid output format")
-            # Log the error in agent_logs instead of cim_analysis
             inserted["agent_logs"].append({
                 "deal_id": deal_id,
                 "agent_name": "memo_agent",
                 "input_payload": "CIM text (omitted for brevity)",
                 "output_payload": str(memo_output),
                 "status": "failed",
-                "error_message": "Invalid memo format - expected dictionary, got string"
+                "error_message": "Invalid memo format - expected dictionary"
             })
 
         # Write agent_logs
