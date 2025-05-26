@@ -121,9 +121,15 @@ class BaseAgent(ABC):
             str: The response from the AI model
         """
         try:
-            # TODO: Implement actual AI model call
-            # For now, return a mock response
-            return "{}"
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a professional M&A analyst."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1
+            )
+            return response.choices[0].message.content
         except Exception as e:
             self.logger.error(f"Error calling AI model: {str(e)}")
             raise

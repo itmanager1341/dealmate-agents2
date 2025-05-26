@@ -12,6 +12,13 @@ import docx
 from datetime import datetime
 import json
 import traceback
+import logging
+from orchestrator.cim_orchestrator import CIMOrchestrator
+from orchestrator.supabase import supabase
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -227,15 +234,20 @@ def process_cim():
     try:
         # Get file from request
         if 'file' not in request.files:
+            logger.error("No file provided in request")
             return jsonify({"error": "No file provided"}), 400
         file = request.files['file']
         if not file:
+            logger.error("Empty file provided")
             return jsonify({"error": "Empty file"}), 400
 
         # Get deal_id from request
         deal_id = request.form.get('deal_id')
         if not deal_id:
+            logger.error("No deal_id provided")
             return jsonify({"error": "No deal_id provided"}), 400
+
+        logger.info(f"Processing CIM for deal_id: {deal_id}")
 
         # Save file temporarily
         tmp_file = tempfile.NamedTemporaryFile(delete=False)
@@ -244,18 +256,22 @@ def process_cim():
 
         try:
             # Initialize orchestrator
+            logger.info("Initializing CIM orchestrator")
             orchestrator = CIMOrchestrator()
             
             # Extract text from PDF
+            logger.info("Extracting text from PDF")
             document_text = orchestrator.load_pdf_text(tmp_file.name)
             if not document_text.strip():
                 raise ValueError("No text could be extracted from the PDF")
 
             # Run all agents
+            logger.info("Running all agents")
             result = orchestrator.run_all_agents(document_text, deal_id)
             
             # Process results
             if result["status"] == "error":
+                logger.error(f"Processing failed: {result['errors']}")
                 return jsonify({"error": "Processing failed", "details": result["errors"]}), 500
 
             # Extract results from each agent
@@ -266,19 +282,24 @@ def process_cim():
 
             # Store results in Supabase
             if financial_result["status"] == "success" and financial_result["output"]:
+                logger.info("Storing financial metrics")
                 supabase.table('deal_metrics').insert(financial_result["output"]).execute()
             
             if risk_result["status"] == "success" and risk_result["output"]:
+                logger.info("Storing risk analysis")
                 supabase.table('ai_outputs').insert(risk_result["output"]).execute()
             
             if consistency_result["status"] == "success" and consistency_result["output"]:
+                logger.info("Storing consistency analysis")
                 supabase.table('ai_outputs').insert(consistency_result["output"]).execute()
             
             if memo_result["status"] == "success" and memo_result["output"]:
+                logger.info("Storing investment memo")
                 supabase.table('cim_analysis').insert(memo_result["output"]).execute()
 
             # Store any errors in agent_logs
             if result["errors"]:
+                logger.warning(f"Storing {len(result['errors'])} errors in agent_logs")
                 for error in result["errors"]:
                     supabase.table('agent_logs').insert({
                         "deal_id": deal_id,
@@ -287,6 +308,7 @@ def process_cim():
                         "message": error
                     }).execute()
 
+            logger.info("CIM processing completed successfully")
             return jsonify({
                 "status": "success",
                 "message": "CIM processed successfully",
@@ -303,6 +325,7 @@ def process_cim():
             os.unlink(tmp_file.name)
 
     except Exception as e:
+        logger.error(f"Error processing CIM: {str(e)}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @app.route('/generate-memo', methods=['POST'])
