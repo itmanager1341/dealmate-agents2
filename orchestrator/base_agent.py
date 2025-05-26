@@ -9,114 +9,127 @@ import openai
 import os
 import traceback
 import uuid
+import logging
 
 # Initialize OpenAI client (expects OPENAI_API_KEY in env)
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 class BaseAgent(ABC):
     """
-    Abstract base class for DealMate AI agents.
-    Subclasses must implement `build_prompt()` and `parse_response()` methods.
+    Abstract base class for all DealMate agents.
+    Defines the interface and common functionality for agent implementations.
     """
 
     def __init__(self, agent_name, model="gpt-4o"):
         self.agent_name = agent_name
         self.model = model
+        self.logger = logging.getLogger(f"dealmate.{agent_name}")
         self.logs = []
 
     @abstractmethod
-    def build_prompt(self, document_text, context={}):
+    def _get_prompt(self, context):
         """
-        Build the prompt for the OpenAI chat model.
-        Must return a list of messages: [ {role, content}, ... ]
+        Generates the prompt for the AI model.
+        
+        Args:
+            context: The context to use for generating the prompt
+            
+        Returns:
+            str: The prompt to send to the AI model
         """
         pass
+
+    def build_prompt(self, document_text, context={}):
+        """
+        Builds the prompt for the AI model using the document text and context.
+        This is a wrapper around _get_prompt that handles the document text.
+        
+        Args:
+            document_text: The text of the document to analyze
+            context: Additional context for the analysis
+            
+        Returns:
+            str: The prompt to send to the AI model
+        """
+        return self._get_prompt(document_text)
 
     @abstractmethod
     def parse_response(self, raw_response):
         """
-        Parse the raw model response into structured output.
-        Returns a dict or json-serializable object.
+        Parses the raw response from the AI model into a structured format.
+        
+        Args:
+            raw_response: The raw response from the AI model
+            
+        Returns:
+            dict: The parsed response in a structured format
         """
         pass
+
+    @abstractmethod
+    def _validate_output_type(self, output):
+        """
+        Validates that the output matches the expected structure.
+        
+        Args:
+            output: The output to validate
+            
+        Returns:
+            bool: True if the output is valid, False otherwise
+        """
+        pass
+
+    def execute(self, document_text, context={}):
+        """
+        Executes the agent's analysis on the given document text.
+        
+        Args:
+            document_text: The text of the document to analyze
+            context: Additional context for the analysis
+            
+        Returns:
+            dict: The analysis results
+        """
+        try:
+            # Generate prompt
+            prompt = self.build_prompt(document_text, context)
+            
+            # Call AI model
+            response = self._call_ai_model(prompt)
+            
+            # Parse response
+            parsed = self.parse_response(response)
+            
+            # Validate output
+            if not self._validate_output_type(parsed):
+                raise ValueError(f"Invalid output structure from {self.agent_name}")
+                
+            return parsed
+            
+        except Exception as e:
+            self.logger.error(f"Error in {self.agent_name}: {str(e)}")
+            raise
+
+    def _call_ai_model(self, prompt):
+        """
+        Calls the AI model with the given prompt.
+        
+        Args:
+            prompt: The prompt to send to the AI model
+            
+        Returns:
+            str: The response from the AI model
+        """
+        try:
+            # TODO: Implement actual AI model call
+            # For now, return a mock response
+            return "{}"
+        except Exception as e:
+            self.logger.error(f"Error calling AI model: {str(e)}")
+            raise
 
     def log(self, message):
         """
         Add a timestamped message to the internal log for traceability.
         """
         self.logs.append(f"[{datetime.now().isoformat()}] {message}")
-
-    def execute(self, text, deal_id="unknown", context=None):
-        """
-        Executes the agent's analysis on the provided text.
-        
-        Args:
-            text (str): The text to analyze
-            deal_id (str): Unique identifier for the deal
-            context (dict, optional): Additional context from other agents
-            
-        Returns:
-            dict: Analysis results with structure:
-                {
-                    "success": bool,
-                    "output": Any,  # Type depends on agent
-                    "error": str,   # If success=False
-                    "log": list     # Execution logs
-                }
-        """
-        log = []
-        try:
-            # Log start
-            log.append(f"Starting {self.agent_name} analysis for deal {deal_id}")
-            
-            # Validate input
-            if not isinstance(text, str):
-                raise ValueError(f"Expected string input, got {type(text)}")
-            
-            # Execute analysis
-            result = self.analyze(text, context)
-            
-            # Validate output
-            if not isinstance(result, dict):
-                raise ValueError(f"Expected dict output from analyze(), got {type(result)}")
-            
-            # Parse and validate response
-            try:
-                parsed = self.parse_response(result)
-                if not self._validate_output_type(parsed):
-                    raise ValueError(f"Invalid output type from {self.agent_name}")
-                output = {
-                    "success": True,
-                    "output": parsed,
-                    "log": log
-                }
-            except Exception as e:
-                log.append(f"Error parsing response: {str(e)}")
-                output = {
-                    "success": False,
-                    "error": f"Failed to parse response: {str(e)}",
-                    "log": log
-                }
-            
-        except Exception as e:
-            log.append(f"Error in {self.agent_name}: {str(e)}")
-            output = {
-                "success": False,
-                "error": str(e),
-                "log": log
-            }
-            
-        return output
-
-    def _validate_output_type(self, output):
-        """
-        Validates that the output matches the expected type for this agent.
-        Override in subclasses to implement specific validation.
-        
-        Args:
-            output: The parsed output to validate
-            
-        Returns:
-            bool: True if output is valid, False otherwise
-        """
-        return True  # Base implementation accepts any output type

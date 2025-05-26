@@ -104,38 +104,26 @@ Return ONLY the JSON array with no additional text or explanation."""
             raise ValueError("No JSON block found in response.")
         return json.loads(match.group())
 
+    def build_prompt(self, document_text, context={}):
+        """
+        Builds the prompt for the AI model using the document text and context.
+        This is a wrapper around _get_prompt that handles the document text.
+        
+        Args:
+            document_text: The text of the document to analyze
+            context: Additional context for the analysis
+            
+        Returns:
+            str: The prompt to send to the AI model
+        """
+        return self._get_prompt(document_text)
+
     def _normalize_output(self, parsed):
         """
-        Converts raw GPT output to a list of clean metrics expected by the system
+        Converts raw GPT output to a list of clean metrics expected by the system.
+        This is now handled by parse_response.
         """
-        metric_list = []
-        for key, value in parsed.items():
-            # Normalize keys for standard metric naming
-            normalized_name = key.replace("_", " ").title()
-            
-            # Handle both string and numeric values
-            if isinstance(value, (int, float)):
-                metric_value = value
-                unit = self._infer_unit_from_name(normalized_name)
-                source_text = f"Extracted from table or chart: {normalized_name}"
-            else:
-                metric_value = self._extract_numeric_value(value)
-                unit = self._infer_unit(value)
-                source_text = value if isinstance(value, str) else ""
-            
-            # Skip if no valid numeric value found
-            if metric_value is None:
-                continue
-                
-            metric = {
-                "metric_name": normalized_name,
-                "metric_value": metric_value,
-                "metric_unit": unit,
-                "source_text": source_text,
-                "pinned": True
-            }
-            metric_list.append(metric)
-        return metric_list
+        return parsed  # No longer needed as parse_response handles normalization
 
     def _infer_unit_from_name(self, metric_name):
         """

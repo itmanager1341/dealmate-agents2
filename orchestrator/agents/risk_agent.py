@@ -201,3 +201,17 @@ Return ONLY the JSON object with no additional text or explanation."""
             return False
                 
         return True
+
+    def build_prompt(self, document_text, context={}):
+        """
+        Builds the prompt for the AI model using the document text and context.
+        This is a wrapper around _get_prompt that handles the document text.
+        
+        Args:
+            document_text: The text of the document to analyze
+            context: Additional context for the analysis
+            
+        Returns:
+            str: The prompt to send to the AI model
+        """
+        return self._get_prompt(document_text)

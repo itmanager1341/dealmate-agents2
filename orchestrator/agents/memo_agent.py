@@ -58,42 +58,17 @@ Return ONLY the JSON object with no additional text or explanation."""
 
     def build_prompt(self, document_text, context={}):
         """
-        Builds a comprehensive prompt to generate an IC-ready memo.
-        Optionally passes in context such as extracted KPIs or red flags.
+        Builds the prompt for the AI model using the document text and context.
+        This is a wrapper around _get_prompt that handles the document text.
+        
+        Args:
+            document_text: The text of the document to analyze
+            context: Additional context for the analysis
+            
+        Returns:
+            str: The prompt to send to the AI model
         """
-        financials = context.get("financial_metrics", [])
-        risks = context.get("risks", [])
-
-        return [
-            {
-                "role": "system",
-                "content": (
-                    "You are a private equity associate drafting an internal investment memo "
-                    "for an M&A deal. Your goal is to synthesize the CIM content into a memo-style summary, "
-                    "using any available financial metrics and risk flags. Be concise and analytical. "
-                    "Return a JSON object with structured sections."
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    "Generate a memo with the following fields:\n"
-                    "{\n"
-                    '  "executive_summary": "...",\n'
-                    '  "investment_grade": "A+ | A | B+ | B | C",\n'
-                    '  "business_model": "...",\n'
-                    '  "financial_summary": "...",\n'
-                    '  "investment_highlights": [ "...", "..." ],\n'
-                    '  "key_risks": [ "...", "..." ],\n'
-                    '  "recommendation": { "action": "...", "rationale": "..." }\n'
-                    "}\n\n"
-                    "You may use the following context:\n\n"
-                    f"Financial Metrics: {json.dumps(financials, indent=2)}\n\n"
-                    f"Risks: {json.dumps(risks, indent=2)}\n\n"
-                    f"CIM Text:\n{document_text[:10000]}"
-                )
-            }
-        ]
+        return self._get_prompt(document_text)
 
     def parse_response(self, raw_response):
         """
