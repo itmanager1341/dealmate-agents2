@@ -8,12 +8,25 @@ from typing import Optional
 
 class FinancialAgent(BaseAgent):
     """
-    Agent to extract key financial metrics from CIM documents using GPT-4o.
+    Agent to extract key financial metrics from CIM documents.
     Output is parsed into metric blocks compatible with the `deal_metrics` Supabase table.
     """
 
-    def __init__(self):
-        super().__init__(agent_name="financial_agent", model="gpt-4o")
+    def __init__(self, user_id: Optional[str] = None, deal_id: Optional[str] = None):
+        """
+        Initialize the financial agent.
+        
+        Args:
+            user_id: Optional user ID for model configuration
+            deal_id: Optional deal ID for model configuration
+        """
+        super().__init__(agent_name="financial_agent", user_id=user_id, deal_id=deal_id)
+
+    def _get_use_case(self) -> str:
+        """
+        Get the use case for this agent.
+        """
+        return "cim_analysis"
 
     def _get_prompt(self, text: str, context: Optional[dict] = None) -> str:
         """

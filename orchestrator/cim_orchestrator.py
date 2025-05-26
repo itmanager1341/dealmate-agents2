@@ -6,19 +6,31 @@ from orchestrator.agents.financial_agent import FinancialAgent
 from orchestrator.agents.risk_agent import RiskAgent
 from orchestrator.agents.memo_agent import MemoAgent
 from orchestrator.agents.consistency_agent import ConsistencyAgent
-from typing import List
+from typing import List, Optional, Dict, Any
+import logging
 
 class CIMOrchestrator:
     """
-    Coordinates execution of all core DealMate agents to process a CIM document.
+    Orchestrates the execution of all agents on CIM documents.
+    Manages the flow of data between agents and handles error cases.
     """
 
-    def __init__(self):
+    def __init__(self, user_id: Optional[str] = None, deal_id: Optional[str] = None):
+        """
+        Initialize the orchestrator.
+        
+        Args:
+            user_id: Optional user ID for model configuration
+            deal_id: Optional deal ID for model configuration
+        """
+        self.logger = logging.getLogger(__name__)
+        self.user_id = user_id
+        self.deal_id = deal_id
         self.agents = {
-            "financial": FinancialAgent(),
-            "risk": RiskAgent(),
-            "memo": MemoAgent(),
-            "consistency": ConsistencyAgent()
+            'financial': FinancialAgent(user_id=user_id, deal_id=deal_id),
+            'risk': RiskAgent(user_id=user_id, deal_id=deal_id),
+            'memo': MemoAgent(user_id=user_id, deal_id=deal_id),
+            'consistency': ConsistencyAgent(user_id=user_id, deal_id=deal_id)
         }
 
     def load_pdf_text(self, file_path):
@@ -51,138 +63,29 @@ class CIMOrchestrator:
         # Join all text with proper spacing
         return "\n\n".join(full_text)
 
-    def run_all_agents(self, document_text, deal_id):
+    def run_all_agents(self, document_text: str) -> Dict[str, Any]:
         """
-        Runs all agents in sequence on the provided document text.
+        Run all agents on the provided document text.
         
         Args:
-            document_text: The text of the document to analyze
-            deal_id: The ID of the deal being analyzed
+            document_text: The text content of the CIM document
             
         Returns:
-            dict: Results from all agents with structure:
-            {
-                "status": "complete" | "error",
-                "results": {
-                    "financial": {
-                        "output": [...],  # List of financial metrics
-                        "status": "success" | "error",
-                        "error": str  # If status is error
-                    },
-                    "risk": {
-                        "output": {...},  # Risk analysis object
-                        "status": "success" | "error",
-                        "error": str  # If status is error
-                    },
-                    "consistency": {
-                        "output": {...},  # Consistency analysis object
-                        "status": "success" | "error",
-                        "error": str  # If status is error
-                    },
-                    "memo": {
-                        "output": {...},  # Investment memo object
-                        "status": "success" | "error",
-                        "error": str  # If status is error
-                    }
-                },
-                "errors": [],  # List of any errors that occurred
-                "logs": []  # List of execution logs
-            }
+            Dictionary containing the results from each agent
         """
-        results = {
-            "status": "complete",
-            "results": {
-                "financial": {"output": [], "status": "success"},
-                "risk": {"output": {}, "status": "success"},
-                "consistency": {"output": {}, "status": "success"},
-                "memo": {"output": {}, "status": "success"}
-            },
-            "errors": [],
-            "logs": []
-        }
-        
-        try:
-            # Split document into chunks
-            chunks = self._split_into_sections(document_text)
-            self.logger.info(f"Split document into {len(chunks)} chunks")
-            
-            # Process each chunk with agents
-            for chunk in chunks:
-                chunk_text = chunk["text"]
-                
-                # Run financial agent on chunk
-                try:
-                    financial_result = self.agents["financial"].execute(chunk_text, context={"deal_id": deal_id})
-                    if financial_result["status"] == "success":
-                        results["results"]["financial"]["output"].extend(financial_result["output"])
-                except Exception as e:
-                    results["results"]["financial"]["status"] = "error"
-                    results["results"]["financial"]["error"] = str(e)
-                    results["errors"].append(f"Financial agent error: {str(e)}")
-                
-                # Run risk agent on chunk
-                try:
-                    risk_result = self.agents["risk"].execute(chunk_text, context={"deal_id": deal_id})
-                    if risk_result["status"] == "success":
-                        # Merge risk results
-                        if not results["results"]["risk"]["output"]:
-                            results["results"]["risk"]["output"] = risk_result["output"]
-                        else:
-                            results["results"]["risk"]["output"]["items"].extend(risk_result["output"].get("items", []))
-                except Exception as e:
-                    results["results"]["risk"]["status"] = "error"
-                    results["results"]["risk"]["error"] = str(e)
-                    results["errors"].append(f"Risk agent error: {str(e)}")
-                
-                # Run consistency agent on chunk
-                try:
-                    consistency_result = self.agents["consistency"].execute(
-                        chunk_text,
-                        context={
-                            "deal_id": deal_id,
-                            "financial_metrics": results["results"]["financial"]["output"],
-                            "risks": results["results"]["risk"]["output"].get("items", [])
-                        }
-                    )
-                    if consistency_result["status"] == "success":
-                        # Merge consistency results
-                        if not results["results"]["consistency"]["output"]:
-                            results["results"]["consistency"]["output"] = consistency_result["output"]
-                        else:
-                            results["results"]["consistency"]["output"]["inconsistencies"].extend(
-                                consistency_result["output"].get("inconsistencies", [])
-                            )
-                except Exception as e:
-                    results["results"]["consistency"]["status"] = "error"
-                    results["results"]["consistency"]["error"] = str(e)
-                    results["errors"].append(f"Consistency agent error: {str(e)}")
-            
-            # Run memo agent on full document with context from other agents
+        results = {}
+        for agent_name, agent in self.agents.items():
             try:
-                context = {
-                    "deal_id": deal_id,
-                    "financial_metrics": results["results"]["financial"]["output"],
-                    "risks": results["results"]["risk"]["output"].get("items", []),
-                    "consistency_analysis": results["results"]["consistency"]["output"]
-                }
-                memo_result = self.agents["memo"].execute(document_text, context=context)
-                if memo_result["status"] == "success":
-                    results["results"]["memo"]["output"] = memo_result["output"]
+                self.logger.info(f"Running {agent_name} agent")
+                result = agent.execute(document_text)
+                results[agent_name] = result
             except Exception as e:
-                results["results"]["memo"]["status"] = "error"
-                results["results"]["memo"]["error"] = str(e)
-                results["errors"].append(f"Memo agent error: {str(e)}")
-            
-            # Update overall status if any agents failed
-            if any(result["status"] == "error" for result in results["results"].values()):
-                results["status"] = "error"
-            
-            return results
-            
-        except Exception as e:
-            results["status"] = "error"
-            results["errors"].append(f"Orchestrator error: {str(e)}")
-            return results
+                self.logger.error(f"Error running {agent_name} agent: {str(e)}")
+                results[agent_name] = {
+                    'status': 'error',
+                    'error': str(e)
+                }
+        return results
 
     async def create_chunks(self, text: str, document_id: str, deal_id: str) -> List[dict]:
         """

@@ -10,11 +10,18 @@ import os
 import traceback
 import uuid
 import logging
-from typing import Optional, Any, List
+from typing import Optional, Any, List, Dict
 import tiktoken
+from supabase import create_client, Client
 
 # Initialize OpenAI client (expects OPENAI_API_KEY in env)
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Initialize Supabase client
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL", ""),
+    os.getenv("SUPABASE_KEY", "")
+)
 
 class BaseAgent(ABC):
     """
@@ -22,12 +29,136 @@ class BaseAgent(ABC):
     Defines the interface and common functionality for agent implementations.
     """
 
-    def __init__(self, agent_name, model="gpt-4o"):
+    def __init__(self, agent_name: str, user_id: Optional[str] = None, deal_id: Optional[str] = None):
+        """
+        Initialize the agent with user and deal context.
+        
+        Args:
+            agent_name: Name of the agent
+            user_id: Optional user ID for model configuration
+            deal_id: Optional deal ID for model configuration
+        """
         self.agent_name = agent_name
-        self.model = model
+        self.user_id = user_id
+        self.deal_id = deal_id
         self.logger = logging.getLogger(f"dealmate.{agent_name}")
         self.logs = []
         self.openai_client = openai.OpenAI()
+        self._load_model_config()
+
+    def _load_model_config(self):
+        """
+        Load the effective model configuration for this agent.
+        Uses the get_effective_model_config function to determine which model to use.
+        """
+        try:
+            # Get the effective model configuration
+            response = supabase.rpc(
+                'get_effective_model_config',
+                {
+                    'p_user_id': self.user_id,
+                    'p_deal_id': self.deal_id,
+                    'p_use_case': self._get_use_case()
+                }
+            ).execute()
+
+            if response.data:
+                self.model_id = response.data
+                # Get model details
+                model_details = supabase.table('ai_models').select('*').eq('id', self.model_id).single().execute()
+                if model_details.data:
+                    self.model_config = model_details.data
+                else:
+                    raise ValueError(f"Model {self.model_id} not found")
+            else:
+                raise ValueError("No effective model configuration found")
+        except Exception as e:
+            self.logger.error(f"Error loading model configuration: {str(e)}")
+            raise
+
+    def _get_use_case(self) -> str:
+        """
+        Get the use case for this agent.
+        Override in subclasses to specify the use case.
+        """
+        return "general_analysis"  # Default use case
+
+    def _log_model_usage(self, input_tokens: int, output_tokens: int, processing_time_ms: int, success: bool, error_message: Optional[str] = None):
+        """
+        Log model usage to the model_usage_logs table.
+        
+        Args:
+            input_tokens: Number of input tokens used
+            output_tokens: Number of output tokens used
+            processing_time_ms: Processing time in milliseconds
+            success: Whether the request was successful
+            error_message: Optional error message
+        """
+        try:
+            usage_log = {
+                "deal_id": self.deal_id,
+                "model_id": self.model_id,
+                "use_case": self._get_use_case(),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "processing_time_ms": processing_time_ms,
+                "success": success,
+                "error_message": error_message,
+                "user_id": self.user_id
+            }
+            
+            supabase.table('model_usage_logs').insert(usage_log).execute()
+        except Exception as e:
+            self.logger.error(f"Error logging model usage: {str(e)}")
+
+    def _call_ai_model(self, prompt: str, operation: str = "default") -> str:
+        """
+        Calls the AI model with the given prompt and logs usage.
+        
+        Args:
+            prompt: The prompt to send to the model
+            operation: The operation being performed
+            
+        Returns:
+            str: The model's response
+        """
+        start_time = datetime.now()
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.model_config["model_id"],
+                messages=[
+                    {"role": "system", "content": "You are a DealMate agent."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            # Calculate usage
+            input_tokens = len(tiktoken.encoding_for_model(self.model_config["model_id"]).encode(prompt))
+            output_tokens = len(tiktoken.encoding_for_model(self.model_config["model_id"]).encode(response.choices[0].message.content))
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            # Log usage
+            self._log_model_usage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                processing_time_ms=int(processing_time),
+                success=True
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            self._log_model_usage(
+                input_tokens=0,
+                output_tokens=0,
+                processing_time_ms=int(processing_time),
+                success=False,
+                error_message=str(e)
+            )
+            self.logger.error(f"Error calling AI model: {str(e)}")
+            raise
 
     @abstractmethod
     def _get_prompt(self, text: str, context: Optional[dict] = None) -> str:
@@ -106,23 +237,6 @@ class BaseAgent(ABC):
                 "chunk_id": chunk["id"]
             }
 
-    async def _call_ai_model(self, prompt: str) -> str:
-        """
-        Calls the OpenAI API with the given prompt.
-        """
-        try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
-                messages=[
-                    {"role": "system", "content": "You are a DealMate agent."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            self.logger.error(f"Error calling AI model: {str(e)}")
-            raise
-
     def log(self, message):
         """
         Add a timestamped message to the internal log for traceability.
@@ -140,7 +254,7 @@ class BaseAgent(ABC):
         Returns:
             List[str]: List of text chunks
         """
-        encoding = tiktoken.encoding_for_model(self.model)
+        encoding = tiktoken.encoding_for_model(self.model_config["model_id"])
         tokens = encoding.encode(text)
         chunks = []
         
@@ -173,7 +287,7 @@ class BaseAgent(ABC):
             dict: Analysis results with status and output
         """
         try:
-            # Split text into chunks
+            # Split text into chunks using chunking model
             chunks = self._chunk_text(document_text)
             self.logger.info(f"Split document into {len(chunks)} chunks")
             
@@ -184,23 +298,17 @@ class BaseAgent(ABC):
                 # Build prompt for this chunk
                 prompt = self.build_prompt(chunk, context)
                 
-                # Call AI model
-                response = self.openai_client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "You are a DealMate agent."},
-                        {"role": "user", "content": prompt}
-                    ]
-                )
+                # Call AI model with analysis operation
+                response = self._call_ai_model(prompt, operation="analysis")
                 
                 # Parse response
-                result = self.parse_response(response.choices[0].message.content)
+                result = self.parse_response(response)
                 results.append(result)
             
             # Combine results from all chunks
             combined_result = self._combine_chunk_results(results)
             
-            # Validate output
+            # Validate output using validation model
             if not self._validate_output_type(combined_result):
                 raise ValueError("Invalid output type")
             
