@@ -4,6 +4,7 @@
 from orchestrator.base_agent import BaseAgent
 import re
 import json
+from typing import Optional
 
 class FinancialAgent(BaseAgent):
     """
@@ -14,7 +15,7 @@ class FinancialAgent(BaseAgent):
     def __init__(self):
         super().__init__(agent_name="financial_agent", model="gpt-4o")
 
-    def _get_prompt(self, context):
+    def _get_prompt(self, text: str, context: Optional[dict] = None) -> str:
         """
         Generates a prompt for the AI to extract financial metrics that match the deal_metrics table structure.
         """
@@ -26,23 +27,21 @@ The metrics MUST follow this EXACT structure to match our database schema:
     {{
         "deal_id": "string", // Will be added by the system
         "metric_name": "string", // Name of the metric (e.g., "Revenue", "EBITDA", "Gross Margin")
-        "metric_value": "string", // The actual value (e.g., "$10M", "15%", "2.5x")
-        "metric_type": "string", // One of: "revenue", "profitability", "growth", "multiple", "other"
-        "time_period": "string", // The period this metric applies to (e.g., "2023", "LTM", "5Y CAGR")
-        "source_section": "string", // Where in the document this was found
-        "confidence_score": float // 0.0 to 1.0 indicating confidence in the extraction
+        "metric_value": numeric, // The actual value (e.g., 1000000, 15.5, 2.5)
+        "metric_unit": "string", // Unit of measurement (e.g., "$", "%", "x")
+        "source_chunk_id": "string", // Will be added by the system
+        "pinned": boolean // Whether this is a key metric
     }}
 ]
 
 IMPORTANT:
 - Each metric must have all fields
-- metric_type must be one of: revenue, profitability, growth, multiple, other
-- confidence_score must be between 0.0 and 1.0
-- metric_value should preserve units (%, $, x, etc.)
-- time_period should be specific when available
+- metric_value must be a number (not a string)
+- metric_unit should be appropriate for the metric
+- pinned should be true for key metrics
 
 CIM Document:
-{context}
+{text}
 
 Extract all relevant financial metrics following the structure above. Focus on:
 1. Revenue metrics
@@ -73,26 +72,17 @@ Return ONLY the JSON array with no additional text or explanation."""
                 # Validate and transform each metric
                 transformed = {
                     "metric_name": str(metric.get("metric_name", "")),
-                    "metric_value": str(metric.get("metric_value", "")),
-                    "metric_type": str(metric.get("metric_type", "other")).lower(),
-                    "time_period": str(metric.get("time_period", "")),
-                    "source_section": str(metric.get("source_section", "")),
-                    "confidence_score": float(metric.get("confidence_score", 0.0))
+                    "metric_value": float(metric.get("metric_value", 0.0)),
+                    "metric_unit": str(metric.get("metric_unit", "")),
+                    "pinned": bool(metric.get("pinned", False))
                 }
-                
-                # Validate metric_type
-                if transformed["metric_type"] not in ["revenue", "profitability", "growth", "multiple", "other"]:
-                    transformed["metric_type"] = "other"
-                    
-                # Validate confidence_score
-                transformed["confidence_score"] = max(0.0, min(1.0, transformed["confidence_score"]))
                 
                 metrics.append(transformed)
                 
             return metrics
-
+            
         except Exception as e:
-            # Return empty list in error case
+            self.logger.error(f"Error parsing financial metrics: {str(e)}")
             return []
 
     def _extract_json_block(self, text):
@@ -220,14 +210,10 @@ Return ONLY the JSON array with no additional text or explanation."""
             
         required_fields = {
             "metric_name": str,
-            "metric_value": str,
-            "metric_type": str,
-            "time_period": str,
-            "source_section": str,
-            "confidence_score": (int, float)
+            "metric_value": (int, float),
+            "metric_unit": str,
+            "pinned": bool
         }
-        
-        valid_metric_types = ["revenue", "profitability", "growth", "multiple", "other"]
         
         for metric in output:
             if not isinstance(metric, dict):
@@ -240,12 +226,4 @@ Return ONLY the JSON array with no additional text or explanation."""
                 if not isinstance(metric[field], expected_type):
                     return False
                     
-            # Validate metric_type
-            if metric["metric_type"].lower() not in valid_metric_types:
-                return False
-                
-            # Validate confidence_score range
-            if not 0.0 <= metric["confidence_score"] <= 1.0:
-                return False
-                
         return True

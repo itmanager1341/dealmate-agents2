@@ -102,41 +102,62 @@ class CIMOrchestrator:
         }
         
         try:
-            # Run financial agent
-            try:
-                financial_result = self.agents["financial"].execute(document_text, context={"deal_id": deal_id})
-                results["results"]["financial"]["output"] = financial_result
-            except Exception as e:
-                results["results"]["financial"]["status"] = "error"
-                results["results"]["financial"]["error"] = str(e)
-                results["errors"].append(f"Financial agent error: {str(e)}")
+            # Split document into chunks
+            chunks = self._split_into_sections(document_text)
+            self.logger.info(f"Split document into {len(chunks)} chunks")
             
-            # Run risk agent
-            try:
-                risk_result = self.agents["risk"].execute(document_text, context={"deal_id": deal_id})
-                results["results"]["risk"]["output"] = risk_result
-            except Exception as e:
-                results["results"]["risk"]["status"] = "error"
-                results["results"]["risk"]["error"] = str(e)
-                results["errors"].append(f"Risk agent error: {str(e)}")
+            # Process each chunk with agents
+            for chunk in chunks:
+                chunk_text = chunk["text"]
+                
+                # Run financial agent on chunk
+                try:
+                    financial_result = self.agents["financial"].execute(chunk_text, context={"deal_id": deal_id})
+                    if financial_result["status"] == "success":
+                        results["results"]["financial"]["output"].extend(financial_result["output"])
+                except Exception as e:
+                    results["results"]["financial"]["status"] = "error"
+                    results["results"]["financial"]["error"] = str(e)
+                    results["errors"].append(f"Financial agent error: {str(e)}")
+                
+                # Run risk agent on chunk
+                try:
+                    risk_result = self.agents["risk"].execute(chunk_text, context={"deal_id": deal_id})
+                    if risk_result["status"] == "success":
+                        # Merge risk results
+                        if not results["results"]["risk"]["output"]:
+                            results["results"]["risk"]["output"] = risk_result["output"]
+                        else:
+                            results["results"]["risk"]["output"]["items"].extend(risk_result["output"].get("items", []))
+                except Exception as e:
+                    results["results"]["risk"]["status"] = "error"
+                    results["results"]["risk"]["error"] = str(e)
+                    results["errors"].append(f"Risk agent error: {str(e)}")
+                
+                # Run consistency agent on chunk
+                try:
+                    consistency_result = self.agents["consistency"].execute(
+                        chunk_text,
+                        context={
+                            "deal_id": deal_id,
+                            "financial_metrics": results["results"]["financial"]["output"],
+                            "risks": results["results"]["risk"]["output"].get("items", [])
+                        }
+                    )
+                    if consistency_result["status"] == "success":
+                        # Merge consistency results
+                        if not results["results"]["consistency"]["output"]:
+                            results["results"]["consistency"]["output"] = consistency_result["output"]
+                        else:
+                            results["results"]["consistency"]["output"]["inconsistencies"].extend(
+                                consistency_result["output"].get("inconsistencies", [])
+                            )
+                except Exception as e:
+                    results["results"]["consistency"]["status"] = "error"
+                    results["results"]["consistency"]["error"] = str(e)
+                    results["errors"].append(f"Consistency agent error: {str(e)}")
             
-            # Run consistency agent
-            try:
-                consistency_result = self.agents["consistency"].execute(
-                    document_text,
-                    context={
-                        "deal_id": deal_id,
-                        "financial_metrics": results["results"]["financial"]["output"],
-                        "risks": results["results"]["risk"]["output"].get("items", [])
-                    }
-                )
-                results["results"]["consistency"]["output"] = consistency_result
-            except Exception as e:
-                results["results"]["consistency"]["status"] = "error"
-                results["results"]["consistency"]["error"] = str(e)
-                results["errors"].append(f"Consistency agent error: {str(e)}")
-            
-            # Run memo agent with context from other agents
+            # Run memo agent on full document with context from other agents
             try:
                 context = {
                     "deal_id": deal_id,
@@ -145,7 +166,8 @@ class CIMOrchestrator:
                     "consistency_analysis": results["results"]["consistency"]["output"]
                 }
                 memo_result = self.agents["memo"].execute(document_text, context=context)
-                results["results"]["memo"]["output"] = memo_result
+                if memo_result["status"] == "success":
+                    results["results"]["memo"]["output"] = memo_result["output"]
             except Exception as e:
                 results["results"]["memo"]["status"] = "error"
                 results["results"]["memo"]["error"] = str(e)

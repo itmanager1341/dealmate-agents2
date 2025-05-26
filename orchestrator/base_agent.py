@@ -10,7 +10,8 @@ import os
 import traceback
 import uuid
 import logging
-from typing import Optional, Any
+from typing import Optional, Any, List
+import tiktoken
 
 # Initialize OpenAI client (expects OPENAI_API_KEY in env)
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -128,6 +129,38 @@ class BaseAgent(ABC):
         """
         self.logs.append(f"[{datetime.now().isoformat()}] {message}")
 
+    def _chunk_text(self, text: str, max_tokens: int = 15000) -> List[str]:
+        """
+        Split text into chunks that fit within token limits.
+        
+        Args:
+            text: The text to chunk
+            max_tokens: Maximum tokens per chunk
+            
+        Returns:
+            List[str]: List of text chunks
+        """
+        encoding = tiktoken.encoding_for_model(self.model)
+        tokens = encoding.encode(text)
+        chunks = []
+        
+        current_chunk = []
+        current_length = 0
+        
+        for token in tokens:
+            if current_length + 1 > max_tokens:
+                chunks.append(encoding.decode(current_chunk))
+                current_chunk = [token]
+                current_length = 1
+            else:
+                current_chunk.append(token)
+                current_length += 1
+                
+        if current_chunk:
+            chunks.append(encoding.decode(current_chunk))
+            
+        return chunks
+
     def execute(self, document_text: str, context: Optional[dict] = None) -> dict:
         """
         Execute the agent's analysis on the provided document text.
@@ -140,28 +173,40 @@ class BaseAgent(ABC):
             dict: Analysis results with status and output
         """
         try:
-            # Build prompt
-            prompt = self.build_prompt(document_text, context)
+            # Split text into chunks
+            chunks = self._chunk_text(document_text)
+            self.logger.info(f"Split document into {len(chunks)} chunks")
             
-            # Call AI model
-            response = self.openai_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are a DealMate agent."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            results = []
+            for i, chunk in enumerate(chunks):
+                self.logger.info(f"Processing chunk {i+1}/{len(chunks)}")
+                
+                # Build prompt for this chunk
+                prompt = self.build_prompt(chunk, context)
+                
+                # Call AI model
+                response = self.openai_client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "You are a DealMate agent."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                
+                # Parse response
+                result = self.parse_response(response.choices[0].message.content)
+                results.append(result)
             
-            # Parse response
-            result = self.parse_response(response.choices[0].message.content)
+            # Combine results from all chunks
+            combined_result = self._combine_chunk_results(results)
             
             # Validate output
-            if not self._validate_output_type(result):
+            if not self._validate_output_type(combined_result):
                 raise ValueError("Invalid output type")
             
             return {
                 "status": "success",
-                "output": result,
+                "output": combined_result,
                 "error": None
             }
             
@@ -172,3 +217,18 @@ class BaseAgent(ABC):
                 "output": None,
                 "error": str(e)
             }
+
+    def _combine_chunk_results(self, results: List[dict]) -> dict:
+        """
+        Combine results from multiple chunks into a single result.
+        Override this method in subclasses to implement specific combination logic.
+        
+        Args:
+            results: List of results from individual chunks
+            
+        Returns:
+            dict: Combined result
+        """
+        # Default implementation just returns the first result
+        # Subclasses should override this to properly combine results
+        return results[0] if results else {}
