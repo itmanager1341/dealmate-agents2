@@ -50,97 +50,112 @@ class CIMOrchestrator:
         # Join all text with proper spacing
         return "\n\n".join(full_text)
 
-    def run_all(self, file_path, deal_id="unknown"):
+    def run_all_agents(self, document_text, deal_id):
         """
-        Runs all agents in sequence and returns a structured response object.
+        Runs all agents in sequence on the provided document text.
+        
+        Args:
+            document_text: The text of the document to analyze
+            deal_id: The ID of the deal being analyzed
+            
+        Returns:
+            dict: Results from all agents with structure:
+            {
+                "status": "complete" | "error",
+                "results": {
+                    "financial": {
+                        "output": [...],  # List of financial metrics
+                        "status": "success" | "error",
+                        "error": str  # If status is error
+                    },
+                    "risk": {
+                        "output": {...},  # Risk analysis object
+                        "status": "success" | "error",
+                        "error": str  # If status is error
+                    },
+                    "consistency": {
+                        "output": {...},  # Consistency analysis object
+                        "status": "success" | "error",
+                        "error": str  # If status is error
+                    },
+                    "memo": {
+                        "output": {...},  # Investment memo object
+                        "status": "success" | "error",
+                        "error": str  # If status is error
+                    }
+                },
+                "errors": [],  # List of any errors that occurred
+                "logs": []  # List of execution logs
+            }
         """
-        output = {
-            "deal_id": deal_id,
-            "status": "started",
-            "results": {},
+        results = {
+            "status": "complete",
+            "results": {
+                "financial": {"output": [], "status": "success"},
+                "risk": {"output": {}, "status": "success"},
+                "consistency": {"output": {}, "status": "success"},
+                "memo": {"output": {}, "status": "success"}
+            },
             "errors": [],
-            "logs": {}
+            "logs": []
         }
-
+        
         try:
-            # Step 1: Extract CIM text
-            cim_text = self.load_pdf_text(file_path)
-            if not cim_text.strip():
-                raise ValueError("No text could be extracted from the PDF")
-            output["status"] = "text_extracted"
-            output["logs"]["text_extraction"] = f"Extracted {len(cim_text.split())} words"
-
-            # Step 2: Run financial agent
-            result_fin = self.agents["financial"].execute(cim_text, deal_id)
-            if result_fin.get("success"):
-                if isinstance(result_fin.get("output"), list):
-                    output["results"]["financial"] = result_fin
-                    output["logs"]["financial"] = f"Extracted {len(result_fin['output'])} metrics"
-                else:
-                    output["errors"].append("Financial agent returned invalid output type")
-                    result_fin["success"] = False
-                    result_fin["error"] = "Invalid output type - expected list"
-            output["results"]["financial"] = result_fin
-            output["logs"]["financial"] = result_fin.get("log", [])
-
-            # Step 3: Run risk agent
-            result_risk = self.agents["risk"].execute(cim_text, deal_id)
-            if result_risk.get("success"):
-                if isinstance(result_risk.get("output"), dict) and "items" in result_risk.get("output", {}):
-                    output["results"]["risk"] = result_risk
-                    output["logs"]["risk"] = f"Identified {len(result_risk['output']['items'])} risks"
-                else:
-                    output["errors"].append("Risk agent returned invalid output type")
-                    result_risk["success"] = False
-                    result_risk["error"] = "Invalid output type - expected dict with items"
-            output["results"]["risk"] = result_risk
-            output["logs"]["risk"] = result_risk.get("log", [])
-
-            # Step 4: Run consistency agent with context
-            result_consistency = self.agents["consistency"].execute(
-                cim_text,
-                deal_id=deal_id,
-                context={
-                    "financial_metrics": result_fin.get("output", []),
-                    "risks": result_risk.get("output", {}).get("items", [])
+            # Run financial agent
+            try:
+                financial_result = self.agents["financial"].execute(document_text, deal_id)
+                results["results"]["financial"]["output"] = financial_result
+            except Exception as e:
+                results["results"]["financial"]["status"] = "error"
+                results["results"]["financial"]["error"] = str(e)
+                results["errors"].append(f"Financial agent error: {str(e)}")
+            
+            # Run risk agent
+            try:
+                risk_result = self.agents["risk"].execute(document_text, deal_id)
+                results["results"]["risk"]["output"] = risk_result
+            except Exception as e:
+                results["results"]["risk"]["status"] = "error"
+                results["results"]["risk"]["error"] = str(e)
+                results["errors"].append(f"Risk agent error: {str(e)}")
+            
+            # Run consistency agent
+            try:
+                consistency_result = self.agents["consistency"].execute(
+                    document_text,
+                    deal_id=deal_id,
+                    context={
+                        "financial_metrics": results["results"]["financial"]["output"],
+                        "risks": results["results"]["risk"]["output"].get("items", [])
+                    }
+                )
+                results["results"]["consistency"]["output"] = consistency_result
+            except Exception as e:
+                results["results"]["consistency"]["status"] = "error"
+                results["results"]["consistency"]["error"] = str(e)
+                results["errors"].append(f"Consistency agent error: {str(e)}")
+            
+            # Run memo agent with context from other agents
+            try:
+                context = {
+                    "financial_metrics": results["results"]["financial"]["output"],
+                    "risks": results["results"]["risk"]["output"].get("items", []),
+                    "consistency_analysis": results["results"]["consistency"]["output"]
                 }
-            )
-            if result_consistency.get("success"):
-                if isinstance(result_consistency.get("output"), dict) and "items" in result_consistency.get("output", {}):
-                    output["results"]["consistency"] = result_consistency
-                    output["logs"]["consistency"] = f"Found {len(result_consistency['output']['items'])} inconsistencies"
-                else:
-                    output["errors"].append("Consistency agent returned invalid output type")
-                    result_consistency["success"] = False
-                    result_consistency["error"] = "Invalid output type - expected dict with items"
-            output["results"]["consistency"] = result_consistency
-            output["logs"]["consistency"] = result_consistency.get("log", [])
-
-            # Step 5: Run memo agent last (context-aware)
-            result_memo = self.agents["memo"].execute(
-                cim_text,
-                deal_id=deal_id,
-                context={
-                    "financial_metrics": result_fin.get("output", []),
-                    "risks": result_risk.get("output", {}).get("items", [])
-                }
-            )
-            if result_memo.get("success"):
-                if isinstance(result_memo.get("output"), dict):
-                    output["results"]["memo"] = result_memo
-                    output["logs"]["memo"] = "Generated investment memo"
-                else:
-                    output["errors"].append("Memo agent returned invalid output type")
-                    result_memo["success"] = False
-                    result_memo["error"] = "Invalid output type - expected dict"
-            output["results"]["memo"] = result_memo
-            output["logs"]["memo"] = result_memo.get("log", [])
-
-            output["status"] = "complete" if not output["errors"] else "error"
-
+                memo_result = self.agents["memo"].execute(document_text, deal_id=deal_id, context=context)
+                results["results"]["memo"]["output"] = memo_result
+            except Exception as e:
+                results["results"]["memo"]["status"] = "error"
+                results["results"]["memo"]["error"] = str(e)
+                results["errors"].append(f"Memo agent error: {str(e)}")
+            
+            # Update overall status if any agents failed
+            if any(result["status"] == "error" for result in results["results"].values()):
+                results["status"] = "error"
+            
+            return results
+            
         except Exception as e:
-            output["status"] = "error"
-            output["errors"].append(str(e))
-            output["logs"]["error"] = f"Failed with error: {str(e)}"
-
-        return output
+            results["status"] = "error"
+            results["errors"].append(f"Orchestrator error: {str(e)}")
+            return results

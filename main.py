@@ -221,160 +221,88 @@ def process_document():
 
 @app.route('/process-cim', methods=['POST'])
 def process_cim():
-    """Process CIM with multi-agent architecture and write to Supabase"""
+    """
+    Process a CIM document through all agents and store results in Supabase.
+    """
     try:
-        from orchestrator.cim_orchestrator import CIMOrchestrator
-        from orchestrator.supabase import supabase
-        import tempfile
-        import os
-
+        # Get file from request
         if 'file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
-
         file = request.files['file']
-        deal_id = request.form.get('deal_id', 'unknown')
+        if not file:
+            return jsonify({"error": "Empty file"}), 400
 
-        if file.filename == '':
-            return jsonify({"error": "No file selected"}), 400
+        # Get deal_id from request
+        deal_id = request.form.get('deal_id')
+        if not deal_id:
+            return jsonify({"error": "No deal_id provided"}), 400
 
         # Save file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            file_path = tmp_file.name
-            file.save(file_path)
+        tmp_file = tempfile.NamedTemporaryFile(delete=False)
+        file.save(tmp_file.name)
+        tmp_file.close()
 
-        # Run multi-agent orchestrator
-        orchestrator = CIMOrchestrator()
-        result = orchestrator.run_all(file_path=file_path, deal_id=deal_id)
+        try:
+            # Initialize orchestrator
+            orchestrator = CIMOrchestrator()
+            
+            # Extract text from PDF
+            document_text = orchestrator.load_pdf_text(tmp_file.name)
+            if not document_text.strip():
+                raise ValueError("No text could be extracted from the PDF")
 
-        # Remove file after use
-        os.remove(file_path)
+            # Run all agents
+            result = orchestrator.run_all_agents(document_text, deal_id)
+            
+            # Process results
+            if result["status"] == "error":
+                return jsonify({"error": "Processing failed", "details": result["errors"]}), 500
 
-        # Collect inserts
-        inserted = {
-            "deal_metrics": [],
-            "ai_outputs": [],
-            "cim_analysis": [],
-            "agent_logs": []
-        }
+            # Extract results from each agent
+            financial_result = result["results"]["financial"]
+            risk_result = result["results"]["risk"]
+            consistency_result = result["results"]["consistency"]
+            memo_result = result["results"]["memo"]
 
-        # Write deal_metrics
-        metrics = result["results"]["financial"].get("output", [])
-        if isinstance(metrics, list):
-            for m in metrics:
-                if isinstance(m, dict):
-                    m["deal_id"] = deal_id
-                    inserted["deal_metrics"].append(m)
-                else:
-                    print(f"❌ Invalid metric format: {m}")
-                    inserted["agent_logs"].append({
+            # Store results in Supabase
+            if financial_result["status"] == "success" and financial_result["output"]:
+                supabase.table('deal_metrics').insert(financial_result["output"]).execute()
+            
+            if risk_result["status"] == "success" and risk_result["output"]:
+                supabase.table('ai_outputs').insert(risk_result["output"]).execute()
+            
+            if consistency_result["status"] == "success" and consistency_result["output"]:
+                supabase.table('ai_outputs').insert(consistency_result["output"]).execute()
+            
+            if memo_result["status"] == "success" and memo_result["output"]:
+                supabase.table('cim_analysis').insert(memo_result["output"]).execute()
+
+            # Store any errors in agent_logs
+            if result["errors"]:
+                for error in result["errors"]:
+                    supabase.table('agent_logs').insert({
                         "deal_id": deal_id,
-                        "agent_name": "financial_agent",
-                        "input_payload": "CIM text (omitted for brevity)",
-                        "output_payload": str(m),
-                        "status": "failed",
-                        "error_message": "Invalid metric format - expected dictionary"
-                    })
-        else:
-            print(f"❌ Financial metrics is not a list: {metrics}")
-            inserted["agent_logs"].append({
-                "deal_id": deal_id,
-                "agent_name": "financial_agent",
-                "input_payload": "CIM text (omitted for brevity)",
-                "output_payload": str(metrics),
-                "status": "failed",
-                "error_message": "Invalid metrics format - expected list"
-            })
-            if "errors" not in result:
-                result["errors"] = []
-            result["errors"].append("Financial agent returned invalid output format")
+                        "agent_type": "orchestrator",
+                        "log_type": "error",
+                        "message": error
+                    }).execute()
 
-        if inserted["deal_metrics"]:
-            supabase.table("deal_metrics").insert(inserted["deal_metrics"]).execute()
-
-        # Write ai_outputs (risks + consistency)
-        for key in ["risk", "consistency"]:
-            output = result["results"][key].get("output", {})
-            if isinstance(output, dict) and "items" in output:
-                for item in output["items"]:
-                    if isinstance(item, dict):
-                        inserted["ai_outputs"].append({
-                            "deal_id": deal_id,
-                            "agent_type": f"{key}_agent",
-                            "output_type": output.get("output_type", f"{key}_summary"),
-                            "output_json": item
-                        })
-                    else:
-                        print(f"❌ Invalid {key} item format: {item}")
-                        inserted["agent_logs"].append({
-                            "deal_id": deal_id,
-                            "agent_name": f"{key}_agent",
-                            "input_payload": "CIM text (omitted for brevity)",
-                            "output_payload": str(item),
-                            "status": "failed",
-                            "error_message": f"Invalid {key} item format - expected dictionary"
-                        })
-            else:
-                print(f"❌ Invalid {key} output format: {output}")
-                inserted["agent_logs"].append({
-                    "deal_id": deal_id,
-                    "agent_name": f"{key}_agent",
-                    "input_payload": "CIM text (omitted for brevity)",
-                    "output_payload": str(output),
-                    "status": "failed",
-                    "error_message": f"Invalid {key} output format - expected dict with items"
-                })
-                if "errors" not in result:
-                    result["errors"] = []
-                result["errors"].append(f"{key.title()} agent returned invalid output format")
-
-        if inserted["ai_outputs"]:
-            supabase.table("ai_outputs").insert(inserted["ai_outputs"]).execute()
-
-        # Write cim_analysis (memo block)
-        memo_output = result["results"]["memo"].get("output", {})
-        if isinstance(memo_output, dict):
-            memo_output["deal_id"] = deal_id
-            inserted["cim_analysis"].append(memo_output)
-            if inserted["cim_analysis"]:
-                supabase.table("cim_analysis").insert(inserted["cim_analysis"]).execute()
-        else:
-            print(f"❌ Memo output is not a dictionary: {memo_output}")
-            if "errors" not in result:
-                result["errors"] = []
-            result["errors"].append("Memo agent returned invalid output format")
-            inserted["agent_logs"].append({
-                "deal_id": deal_id,
-                "agent_name": "memo_agent",
-                "input_payload": "CIM text (omitted for brevity)",
-                "output_payload": str(memo_output),
-                "status": "failed",
-                "error_message": "Invalid memo format - expected dictionary"
+            return jsonify({
+                "status": "success",
+                "message": "CIM processed successfully",
+                "results": {
+                    "financial": financial_result["status"],
+                    "risk": risk_result["status"],
+                    "consistency": consistency_result["status"],
+                    "memo": memo_result["status"]
+                }
             })
 
-        # Write agent_logs
-        for agent_name, logs in result.get("logs", {}).items():
-            inserted["agent_logs"].append({
-                "deal_id": deal_id,
-                "agent_name": agent_name,
-                "input_payload": "CIM text (omitted for brevity)",
-                "output_payload": result["results"].get(agent_name, {}).get("output"),
-                "status": "success" if result["results"].get(agent_name, {}).get("success") else "failed",
-                "error_message": result["results"].get(agent_name, {}).get("error", None)
-            })
-        if inserted["agent_logs"]:
-            supabase.table("agent_logs").insert(inserted["agent_logs"]).execute()
-
-        return jsonify({
-            "success": True,
-            "deal_id": deal_id,
-            "message": "CIM processed and stored",
-            "status": result.get("status", "complete"),
-            "errors": result.get("errors", []),
-            "written": {k: len(v) for k, v in inserted.items()}
-        })
+        finally:
+            # Clean up temporary file
+            os.unlink(tmp_file.name)
 
     except Exception as e:
-        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/generate-memo', methods=['POST'])
