@@ -262,7 +262,8 @@ def process_cim():
         for m in metrics:
             m["deal_id"] = deal_id
             inserted["deal_metrics"].append(m)
-        supabase.table("deal_metrics").insert(inserted["deal_metrics"]).execute()
+        if inserted["deal_metrics"]:
+            supabase.table("deal_metrics").insert(inserted["deal_metrics"]).execute()
 
         # Write ai_outputs (risks + consistency)
         for key in ["risk", "consistency"]:
@@ -274,13 +275,31 @@ def process_cim():
                     "output_type": result["results"][key]["output_type"],
                     "output_json": item
                 })
-        supabase.table("ai_outputs").insert(inserted["ai_outputs"]).execute()
+        if inserted["ai_outputs"]:
+            supabase.table("ai_outputs").insert(inserted["ai_outputs"]).execute()
 
         # Write cim_analysis (memo block)
-        memo = result["results"]["memo"].get("output", {})
-        memo["deal_id"] = deal_id
-        inserted["cim_analysis"].append(memo)
-        supabase.table("cim_analysis").insert(inserted["cim_analysis"]).execute()
+        memo_output = result["results"]["memo"].get("output", {})
+        if isinstance(memo_output, dict):
+            memo_output["deal_id"] = deal_id
+            inserted["cim_analysis"].append(memo_output)
+            if inserted["cim_analysis"]:
+                supabase.table("cim_analysis").insert(inserted["cim_analysis"]).execute()
+        else:
+            print(f"❌ Memo output is not a dictionary: {memo_output}")
+            # Add error to the response
+            if "errors" not in result:
+                result["errors"] = []
+            result["errors"].append("Memo agent returned invalid output format")
+            # Log the error in agent_logs instead of cim_analysis
+            inserted["agent_logs"].append({
+                "deal_id": deal_id,
+                "agent_name": "memo_agent",
+                "input_payload": "CIM text (omitted for brevity)",
+                "output_payload": str(memo_output),
+                "status": "failed",
+                "error_message": "Invalid memo format - expected dictionary, got string"
+            })
 
         # Write agent_logs
         for agent_name, logs in result.get("logs", {}).items():
@@ -292,7 +311,8 @@ def process_cim():
                 "status": "success" if result["results"].get(agent_name, {}).get("success") else "failed",
                 "error_message": result["results"].get(agent_name, {}).get("error", None)
             })
-        supabase.table("agent_logs").insert(inserted["agent_logs"]).execute()
+        if inserted["agent_logs"]:
+            supabase.table("agent_logs").insert(inserted["agent_logs"]).execute()
 
         return jsonify({
             "success": True,
