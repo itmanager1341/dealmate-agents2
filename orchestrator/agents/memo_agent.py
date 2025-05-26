@@ -14,6 +14,48 @@ class MemoAgent(BaseAgent):
     def __init__(self):
         super().__init__(agent_name="memo_agent", model="gpt-4o")
 
+    def _get_prompt(self, context):
+        """
+        Generates a prompt for the AI to create an investment memo that matches the cim_analysis table structure.
+        """
+        return f"""You are an expert investment analyst. Create a comprehensive investment memo for the following CIM document.
+
+The memo MUST follow this EXACT structure to match our database schema:
+
+{{
+    "investment_grade": "A+", // One of: A+, A, B+, B, C
+    "executive_summary": "string", // Brief overview of the investment opportunity
+    "business_model": {{}}, // JSON object describing the business model
+    "financial_metrics": {{}}, // JSON object with key financial metrics
+    "key_risks": {{}}, // JSON object detailing major risks
+    "competitive_position": {{}}, // JSON object analyzing market position
+    "recommendation": {{}}, // JSON object with investment recommendation
+    "investment_highlights": [], // Array of key investment points
+    "management_questions": [] // Array of questions for management
+}}
+
+IMPORTANT:
+- All fields must be present
+- investment_grade must be one of: A+, A, B+, B, C
+- business_model, financial_metrics, key_risks, competitive_position, and recommendation must be JSON objects
+- investment_highlights and management_questions must be arrays
+- executive_summary must be a string
+
+CIM Document:
+{context}
+
+Generate a detailed investment memo following the structure above. Focus on:
+1. Clear investment grade based on risk/reward
+2. Comprehensive business model analysis
+3. Detailed financial metrics
+4. Thorough risk assessment
+5. Strong competitive analysis
+6. Clear investment recommendation
+7. Key investment highlights
+8. Critical management questions
+
+Return ONLY the JSON object with no additional text or explanation."""
+
     def build_prompt(self, document_text, context={}):
         """
         Builds a comprehensive prompt to generate an IC-ready memo.
@@ -55,7 +97,7 @@ class MemoAgent(BaseAgent):
 
     def parse_response(self, raw_response):
         """
-        Parses the response into a structured investment memo object.
+        Parses the response into a structured investment memo object that exactly matches the cim_analysis table.
         """
         try:
             parsed = self._extract_json_block(raw_response)
@@ -65,28 +107,46 @@ class MemoAgent(BaseAgent):
             if not isinstance(investment_grade, str) or investment_grade not in ["A+", "A", "B+", "B", "C"]:
                 investment_grade = "B"  # Default to B if invalid
 
-            # Enforce required fields with defaults
+            # Transform to match cim_analysis table structure exactly
             return {
+                # Required fields
                 "investment_grade": investment_grade,
-                "company_overview": parsed.get("business_model", ""),  # Map business_model to company_overview
-                "market_analysis": parsed.get("market_analysis", ""),
-                "financial_analysis": parsed.get("financial_summary", ""),  # Map financial_summary to financial_analysis
-                "risk_analysis": "\n".join(parsed.get("key_risks", [])),  # Convert list to string
-                "investment_thesis": parsed.get("executive_summary", ""),  # Map executive_summary to investment_thesis
-                "deal_considerations": parsed.get("recommendation", {}).get("rationale", ""),  # Extract rationale
-                "raw_ai_response": raw_response  # for debug or re-display
+                "executive_summary": parsed.get("executive_summary", ""),
+                
+                # JSONB fields
+                "business_model": parsed.get("business_model", {}),
+                "financial_metrics": parsed.get("financial_metrics", {}),
+                "key_risks": parsed.get("key_risks", {}),
+                "competitive_position": parsed.get("competitive_position", {}),
+                "recommendation": parsed.get("recommendation", {}),
+                
+                # Array fields
+                "investment_highlights": parsed.get("investment_highlights", []),
+                "management_questions": parsed.get("management_questions", []),
+                
+                # Debug field
+                "raw_ai_response": raw_response
             }
 
         except Exception as e:
             # Return a valid structure even in error case
             return {
+                # Required fields
                 "investment_grade": "B",  # Default grade
-                "company_overview": "",
-                "market_analysis": "",
-                "financial_analysis": "",
-                "risk_analysis": "",
-                "investment_thesis": "",
-                "deal_considerations": "",
+                "executive_summary": "",
+                
+                # JSONB fields
+                "business_model": {},
+                "financial_metrics": {},
+                "key_risks": {},
+                "competitive_position": {},
+                "recommendation": {},
+                
+                # Array fields
+                "investment_highlights": [],
+                "management_questions": [],
+                
+                # Debug field
                 "raw_ai_response": raw_response,
                 "error": f"Could not parse memo response: {str(e)}"
             }
@@ -102,7 +162,7 @@ class MemoAgent(BaseAgent):
 
     def _validate_output_type(self, output):
         """
-        Validates that the output is a dictionary with memo sections.
+        Validates that the output matches the cim_analysis table structure exactly.
         
         Args:
             output: The parsed output to validate
@@ -113,25 +173,27 @@ class MemoAgent(BaseAgent):
         if not isinstance(output, dict):
             return False
             
-        required_sections = [
-            "investment_grade",
-            "company_overview",
-            "market_analysis",
-            "financial_analysis",
-            "risk_analysis",
-            "investment_thesis",
-            "deal_considerations"
-        ]
+        # Check required fields
+        required_fields = {
+            "investment_grade": str,
+            "executive_summary": str,
+            "business_model": dict,
+            "financial_metrics": dict,
+            "key_risks": dict,
+            "competitive_position": dict,
+            "recommendation": dict,
+            "investment_highlights": list,
+            "management_questions": list
+        }
         
-        # Check all required sections exist and are strings
-        if not all(section in output for section in required_sections):
-            return False
-            
-        for section in required_sections:
-            if not isinstance(output[section], str):
+        # Validate all required fields exist and have correct types
+        for field, expected_type in required_fields.items():
+            if field not in output:
+                return False
+            if not isinstance(output[field], expected_type):
                 return False
                 
-        # Validate investment_grade specifically
+        # Validate investment_grade values
         if output["investment_grade"] not in ["A+", "A", "B+", "B", "C"]:
             return False
                 

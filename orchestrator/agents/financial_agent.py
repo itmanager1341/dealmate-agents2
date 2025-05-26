@@ -14,51 +14,86 @@ class FinancialAgent(BaseAgent):
     def __init__(self):
         super().__init__(agent_name="financial_agent", model="gpt-4o")
 
-    def build_prompt(self, document_text, context={}):
+    def _get_prompt(self, context):
         """
-        Constructs the prompt sent to the LLM. Focuses on extracting structured KPIs.
+        Generates a prompt for the AI to extract financial metrics that match the deal_metrics table structure.
         """
-        return [
-            {
-                "role": "system",
-                "content": (
-                    "You are a private equity analyst. Extract key financial metrics from the provided text. "
-                    "Pay special attention to tables and charts, which often contain the most important metrics. "
-                    "Look for metrics in both narrative text and structured data. "
-                    "Only use data explicitly found in the text. Do not assume values. "
-                    "Format the output as structured JSON. "
-                    "Include the original sentence, table row, or source text next to each metric for traceability."
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    "Extract the following from the CIM:\n"
-                    "- Revenue (TTM or 2024E)\n"
-                    "- EBITDA and EBITDA Margin\n"
-                    "- Revenue CAGR (3–5 years)\n"
-                    "- Deal size estimate (implied enterprise value)\n"
-                    "- Revenue and EBITDA multiples\n"
-                    "- Any available growth rates, net income, or free cash flow\n\n"
-                    "Text:\n" + document_text[:10000]  # safely within GPT-4o context window
-                )
-            }
-        ]
+        return f"""You are a financial analyst. Extract key financial metrics from the following CIM document.
+
+The metrics MUST follow this EXACT structure to match our database schema:
+
+[
+    {{
+        "deal_id": "string", // Will be added by the system
+        "metric_name": "string", // Name of the metric (e.g., "Revenue", "EBITDA", "Gross Margin")
+        "metric_value": "string", // The actual value (e.g., "$10M", "15%", "2.5x")
+        "metric_type": "string", // One of: "revenue", "profitability", "growth", "multiple", "other"
+        "time_period": "string", // The period this metric applies to (e.g., "2023", "LTM", "5Y CAGR")
+        "source_section": "string", // Where in the document this was found
+        "confidence_score": float // 0.0 to 1.0 indicating confidence in the extraction
+    }}
+]
+
+IMPORTANT:
+- Each metric must have all fields
+- metric_type must be one of: revenue, profitability, growth, multiple, other
+- confidence_score must be between 0.0 and 1.0
+- metric_value should preserve units (%, $, x, etc.)
+- time_period should be specific when available
+
+CIM Document:
+{context}
+
+Extract all relevant financial metrics following the structure above. Focus on:
+1. Revenue metrics
+2. Profitability metrics
+3. Growth rates
+4. Valuation multiples
+5. Key ratios
+6. Market size metrics
+7. Historical trends
+8. Projections
+
+Return ONLY the JSON array with no additional text or explanation."""
 
     def parse_response(self, raw_response):
         """
-        Converts raw model output into a structured list of metrics.
-        Accepts both JSON and JSON-like bullet formats and converts to uniform format.
+        Parses the response into a list of financial metrics that exactly match the deal_metrics table structure.
         """
         try:
-            # Try direct JSON block parsing
-            parsed_json = self._extract_json_block(raw_response)
-            return self._normalize_output(parsed_json)
-        except Exception:
-            return {
-                "error": "Could not parse model response. Raw output:",
-                "raw_output": raw_response
-            }
+            parsed = self._extract_json_block(raw_response)
+            
+            # Ensure we have a list of metrics
+            if not isinstance(parsed, list):
+                parsed = [parsed]
+                
+            # Transform each metric to match deal_metrics table structure
+            metrics = []
+            for metric in parsed:
+                # Validate and transform each metric
+                transformed = {
+                    "metric_name": str(metric.get("metric_name", "")),
+                    "metric_value": str(metric.get("metric_value", "")),
+                    "metric_type": str(metric.get("metric_type", "other")).lower(),
+                    "time_period": str(metric.get("time_period", "")),
+                    "source_section": str(metric.get("source_section", "")),
+                    "confidence_score": float(metric.get("confidence_score", 0.0))
+                }
+                
+                # Validate metric_type
+                if transformed["metric_type"] not in ["revenue", "profitability", "growth", "multiple", "other"]:
+                    transformed["metric_type"] = "other"
+                    
+                # Validate confidence_score
+                transformed["confidence_score"] = max(0.0, min(1.0, transformed["confidence_score"]))
+                
+                metrics.append(transformed)
+                
+            return metrics
+
+        except Exception as e:
+            # Return empty list in error case
+            return []
 
     def _extract_json_block(self, text):
         """
@@ -184,7 +219,7 @@ class FinancialAgent(BaseAgent):
 
     def _validate_output_type(self, output):
         """
-        Validates that the output is a list of metric dictionaries.
+        Validates that the output matches the deal_metrics table structure exactly.
         
         Args:
             output: The parsed output to validate
@@ -195,10 +230,34 @@ class FinancialAgent(BaseAgent):
         if not isinstance(output, list):
             return False
             
+        required_fields = {
+            "metric_name": str,
+            "metric_value": str,
+            "metric_type": str,
+            "time_period": str,
+            "source_section": str,
+            "confidence_score": (int, float)
+        }
+        
+        valid_metric_types = ["revenue", "profitability", "growth", "multiple", "other"]
+        
         for metric in output:
             if not isinstance(metric, dict):
                 return False
-            if not all(k in metric for k in ["metric_name", "metric_value"]):
+                
+            # Check all required fields exist and have correct types
+            for field, expected_type in required_fields.items():
+                if field not in metric:
+                    return False
+                if not isinstance(metric[field], expected_type):
+                    return False
+                    
+            # Validate metric_type
+            if metric["metric_type"].lower() not in valid_metric_types:
+                return False
+                
+            # Validate confidence_score range
+            if not 0.0 <= metric["confidence_score"] <= 1.0:
                 return False
                 
         return True

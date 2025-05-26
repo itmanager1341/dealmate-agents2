@@ -14,67 +14,122 @@ class RiskAgent(BaseAgent):
     def __init__(self):
         super().__init__(agent_name="risk_agent", model="gpt-4o")
 
-    def build_prompt(self, document_text, context={}):
+    def _get_prompt(self, context):
         """
-        Build prompt to identify risks that could impact investment decisions.
+        Generates a prompt for the AI to analyze risks that match the ai_outputs table structure.
         """
-        return [
-            {
-                "role": "system",
-                "content": (
-                    "You are an M&A analyst. Read the CIM and identify any business, market, or operational risks that "
-                    "could negatively impact an investor's decision to pursue this deal. Focus on risks mentioned explicitly "
-                    "in the text, and output each risk as a structured object including severity and potential impact."
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    "From the following CIM text, extract risks with the following JSON format:\n\n"
-                    "{\n"
-                    '  "risks": [\n'
-                    "    {\n"
-                    '      "risk": "Description of the risk",\n'
-                    '      "severity": "High | Medium | Low",\n'
-                    '      "impact": "Impact on investment or operations",\n'
-                    '      "source_text": "Original sentence or paragraph where this risk is described"\n'
-                    "    }\n"
-                    "  ]\n"
-                    "}\n\n"
-                    "CIM TEXT:\n" + document_text[:10000]
-                )
-            }
-        ]
+        return f"""You are a risk analyst. Analyze the following CIM document for potential risks and issues.
+
+The output MUST follow this EXACT structure to match our database schema:
+
+{{
+    "deal_id": "string", // Will be added by the system
+    "agent_type": "risk_agent", // Fixed value
+    "output_json": {{
+        "risk_summary": "string", // Overall risk assessment
+        "risk_categories": {{
+            "market_risks": [], // Array of market-related risks
+            "financial_risks": [], // Array of financial risks
+            "operational_risks": [], // Array of operational risks
+            "regulatory_risks": [], // Array of regulatory risks
+            "other_risks": [] // Array of other identified risks
+        }},
+        "risk_scores": {{
+            "market_risk": float, // 0.0 to 1.0
+            "financial_risk": float, // 0.0 to 1.0
+            "operational_risk": float, // 0.0 to 1.0
+            "regulatory_risk": float, // 0.0 to 1.0
+            "overall_risk": float // 0.0 to 1.0
+        }},
+        "mitigation_strategies": [], // Array of suggested risk mitigation strategies
+        "confidence_score": float // 0.0 to 1.0 indicating confidence in the analysis
+    }}
+}}
+
+IMPORTANT:
+- All fields must be present
+- Risk scores must be between 0.0 and 1.0
+- Each risk category must be an array
+- confidence_score must be between 0.0 and 1.0
+- risk_summary should be a concise overview
+
+CIM Document:
+{context}
+
+Analyze the document for risks following the structure above. Focus on:
+1. Market risks (competition, demand, pricing)
+2. Financial risks (liquidity, leverage, growth)
+3. Operational risks (execution, scalability, technology)
+4. Regulatory risks (compliance, legal, policy)
+5. Other significant risks
+6. Potential mitigation strategies
+
+Return ONLY the JSON object with no additional text or explanation."""
 
     def parse_response(self, raw_response):
         """
-        Parses model output into a clean JSON structure with a list of risk entries.
+        Parses the response into a risk analysis object that exactly matches the ai_outputs table structure.
         """
         try:
-            # Extract and parse JSON block from raw response
-            parsed_json = self._extract_json_block(raw_response)
-            risks = parsed_json.get("risks", [])
-
-            # Clean formatting, enforce required fields
-            normalized = []
-            for r in risks:
-                normalized.append({
-                    "risk": r.get("risk", "").strip(),
-                    "severity": r.get("severity", "Medium").strip(),
-                    "impact": r.get("impact", "").strip(),
-                    "source_text": r.get("source_text", "").strip()
-                })
-
-            return {
-                "output_type": "risk_summary",
-                "items": normalized
+            parsed = self._extract_json_block(raw_response)
+            
+            # Transform to match ai_outputs table structure
+            output = {
+                "agent_type": "risk_agent",
+                "output_json": {
+                    "risk_summary": str(parsed.get("risk_summary", "")),
+                    "risk_categories": {
+                        "market_risks": list(parsed.get("risk_categories", {}).get("market_risks", [])),
+                        "financial_risks": list(parsed.get("risk_categories", {}).get("financial_risks", [])),
+                        "operational_risks": list(parsed.get("risk_categories", {}).get("operational_risks", [])),
+                        "regulatory_risks": list(parsed.get("risk_categories", {}).get("regulatory_risks", [])),
+                        "other_risks": list(parsed.get("risk_categories", {}).get("other_risks", []))
+                    },
+                    "risk_scores": {
+                        "market_risk": float(parsed.get("risk_scores", {}).get("market_risk", 0.0)),
+                        "financial_risk": float(parsed.get("risk_scores", {}).get("financial_risk", 0.0)),
+                        "operational_risk": float(parsed.get("risk_scores", {}).get("operational_risk", 0.0)),
+                        "regulatory_risk": float(parsed.get("risk_scores", {}).get("regulatory_risk", 0.0)),
+                        "overall_risk": float(parsed.get("risk_scores", {}).get("overall_risk", 0.0))
+                    },
+                    "mitigation_strategies": list(parsed.get("mitigation_strategies", [])),
+                    "confidence_score": float(parsed.get("confidence_score", 0.0))
+                }
             }
+            
+            # Validate and normalize risk scores
+            for score in output["output_json"]["risk_scores"].values():
+                score = max(0.0, min(1.0, score))
+                
+            # Validate confidence score
+            output["output_json"]["confidence_score"] = max(0.0, min(1.0, output["output_json"]["confidence_score"]))
+            
+            return output
 
         except Exception as e:
+            # Return a valid structure even in error case
             return {
-                "error": "Could not parse model response.",
-                "raw_output": raw_response,
-                "exception": str(e)
+                "agent_type": "risk_agent",
+                "output_json": {
+                    "risk_summary": "",
+                    "risk_categories": {
+                        "market_risks": [],
+                        "financial_risks": [],
+                        "operational_risks": [],
+                        "regulatory_risks": [],
+                        "other_risks": []
+                    },
+                    "risk_scores": {
+                        "market_risk": 0.0,
+                        "financial_risk": 0.0,
+                        "operational_risk": 0.0,
+                        "regulatory_risk": 0.0,
+                        "overall_risk": 0.0
+                    },
+                    "mitigation_strategies": [],
+                    "confidence_score": 0.0,
+                    "error": f"Could not parse risk analysis: {str(e)}"
+                }
             }
 
     def _extract_json_block(self, text):
@@ -88,7 +143,7 @@ class RiskAgent(BaseAgent):
 
     def _validate_output_type(self, output):
         """
-        Validates that the output is a dictionary with risk items.
+        Validates that the output matches the ai_outputs table structure exactly.
         
         Args:
             output: The parsed output to validate
@@ -99,16 +154,50 @@ class RiskAgent(BaseAgent):
         if not isinstance(output, dict):
             return False
             
-        if "output_type" not in output or output["output_type"] != "risk_summary":
+        # Check required fields
+        if "agent_type" not in output or output["agent_type"] != "risk_agent":
             return False
             
-        if "items" not in output or not isinstance(output["items"], list):
+        if "output_json" not in output or not isinstance(output["output_json"], dict):
             return False
             
-        for item in output["items"]:
-            if not isinstance(item, dict):
+        output_json = output["output_json"]
+        
+        # Check required output_json fields
+        required_fields = {
+            "risk_summary": str,
+            "risk_categories": dict,
+            "risk_scores": dict,
+            "mitigation_strategies": list,
+            "confidence_score": (int, float)
+        }
+        
+        for field, expected_type in required_fields.items():
+            if field not in output_json:
                 return False
-            if not all(k in item for k in ["risk_type", "description", "severity"]):
+            if not isinstance(output_json[field], expected_type):
                 return False
+                
+        # Validate risk categories
+        required_categories = ["market_risks", "financial_risks", "operational_risks", "regulatory_risks", "other_risks"]
+        for category in required_categories:
+            if category not in output_json["risk_categories"]:
+                return False
+            if not isinstance(output_json["risk_categories"][category], list):
+                return False
+                
+        # Validate risk scores
+        required_scores = ["market_risk", "financial_risk", "operational_risk", "regulatory_risk", "overall_risk"]
+        for score in required_scores:
+            if score not in output_json["risk_scores"]:
+                return False
+            if not isinstance(output_json["risk_scores"][score], (int, float)):
+                return False
+            if not 0.0 <= output_json["risk_scores"][score] <= 1.0:
+                return False
+                
+        # Validate confidence score range
+        if not 0.0 <= output_json["confidence_score"] <= 1.0:
+            return False
                 
         return True

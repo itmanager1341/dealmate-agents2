@@ -14,84 +14,138 @@ class ConsistencyAgent(BaseAgent):
     def __init__(self):
         super().__init__(agent_name="consistency_agent", model="gpt-4o")
 
-    def build_prompt(self, document_text, context={}):
+    def _get_prompt(self, context):
         """
-        Builds a prompt that passes CIM text along with known financial metrics and risks,
-        then asks the model to flag inconsistencies or contradictions.
+        Generates a prompt for the AI to check consistency that matches the ai_outputs table structure.
         """
-        financials = context.get("financial_metrics", [])
-        risks = context.get("risks", [])
+        return f"""You are a consistency analyst. Check the following CIM document for inconsistencies and contradictions.
 
-        return [
-            {
-                "role": "system",
-                "content": (
-                    "You are a private equity analyst. Cross-check the narrative, financial metrics, and known risks "
-                    "to flag inconsistencies, contradictions, or unrealistic claims. Be specific and objective. "
-                    "Return a structured JSON list of consistency issues with severity and rationale."
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    "Compare the following:\n\n"
-                    f"Financial Metrics: {json.dumps(financials, indent=2)}\n\n"
-                    f"Risks: {json.dumps(risks, indent=2)}\n\n"
-                    "CIM Narrative:\n" + document_text[:10000] + "\n\n"
-                    "Output format:\n"
-                    "{\n"
-                    '  "inconsistencies": [\n'
-                    "    {\n"
-                    '      "issue": "Contradictory statements or red flags",\n'
-                    '      "severity": "High | Medium | Low",\n'
-                    '      "rationale": "Explanation with example text"\n'
-                    "    }\n"
-                    "  ]\n"
-                    "}"
-                )
-            }
-        ]
+The output MUST follow this EXACT structure to match our database schema:
+
+{{
+    "deal_id": "string", // Will be added by the system
+    "agent_type": "consistency_agent", // Fixed value
+    "output_json": {{
+        "consistency_summary": "string", // Overall consistency assessment
+        "inconsistencies": [
+            {{
+                "type": "string", // One of: "financial", "narrative", "metric", "timeline", "other"
+                "description": "string", // Description of the inconsistency
+                "location": "string", // Where in the document this was found
+                "severity": "string", // One of: "high", "medium", "low"
+                "impact": "string", // Impact on analysis
+                "resolution": "string" // Suggested resolution
+            }}
+        ],
+        "consistency_scores": {{
+            "financial_consistency": float, // 0.0 to 1.0
+            "narrative_consistency": float, // 0.0 to 1.0
+            "metric_consistency": float, // 0.0 to 1.0
+            "timeline_consistency": float, // 0.0 to 1.0
+            "overall_consistency": float // 0.0 to 1.0
+        }},
+        "recommendations": [], // Array of recommendations to resolve inconsistencies
+        "confidence_score": float // 0.0 to 1.0 indicating confidence in the analysis
+    }}
+}}
+
+IMPORTANT:
+- All fields must be present
+- Consistency scores must be between 0.0 and 1.0
+- Inconsistency types must be one of: financial, narrative, metric, timeline, other
+- Severity must be one of: high, medium, low
+- confidence_score must be between 0.0 and 1.0
+
+CIM Document:
+{context}
+
+Analyze the document for inconsistencies following the structure above. Focus on:
+1. Financial statement consistency
+2. Narrative consistency across sections
+3. Metric consistency and calculations
+4. Timeline consistency
+5. Other potential contradictions
+6. Recommendations for resolution
+
+Return ONLY the JSON object with no additional text or explanation."""
 
     def parse_response(self, raw_response):
         """
-        Parses JSON block from model response into a list of inconsistencies.
+        Parses the response into a consistency analysis object that exactly matches the ai_outputs table structure.
         """
         try:
-            parsed_json = self._extract_json_block(raw_response)
-            issues = parsed_json.get("inconsistencies", [])
-
-            normalized = []
-            for item in issues:
-                normalized.append({
-                    "issue": item.get("issue", "").strip(),
-                    "severity": item.get("severity", "Medium").strip(),
-                    "rationale": item.get("rationale", "").strip()
-                })
-
-            return {
-                "output_type": "consistency_issues",
-                "items": normalized
+            parsed = self._extract_json_block(raw_response)
+            
+            # Transform to match ai_outputs table structure
+            output = {
+                "agent_type": "consistency_agent",
+                "output_json": {
+                    "consistency_summary": str(parsed.get("consistency_summary", "")),
+                    "inconsistencies": [
+                        {
+                            "type": str(inc.get("type", "other")).lower(),
+                            "description": str(inc.get("description", "")),
+                            "location": str(inc.get("location", "")),
+                            "severity": str(inc.get("severity", "medium")).lower(),
+                            "impact": str(inc.get("impact", "")),
+                            "resolution": str(inc.get("resolution", ""))
+                        }
+                        for inc in parsed.get("inconsistencies", [])
+                    ],
+                    "consistency_scores": {
+                        "financial_consistency": float(parsed.get("consistency_scores", {}).get("financial_consistency", 0.0)),
+                        "narrative_consistency": float(parsed.get("consistency_scores", {}).get("narrative_consistency", 0.0)),
+                        "metric_consistency": float(parsed.get("consistency_scores", {}).get("metric_consistency", 0.0)),
+                        "timeline_consistency": float(parsed.get("consistency_scores", {}).get("timeline_consistency", 0.0)),
+                        "overall_consistency": float(parsed.get("consistency_scores", {}).get("overall_consistency", 0.0))
+                    },
+                    "recommendations": list(parsed.get("recommendations", [])),
+                    "confidence_score": float(parsed.get("confidence_score", 0.0))
+                }
             }
+            
+            # Validate and normalize consistency scores
+            for score in output["output_json"]["consistency_scores"].values():
+                score = max(0.0, min(1.0, score))
+                
+            # Validate confidence score
+            output["output_json"]["confidence_score"] = max(0.0, min(1.0, output["output_json"]["confidence_score"]))
+            
+            # Validate inconsistency types and severities
+            valid_types = ["financial", "narrative", "metric", "timeline", "other"]
+            valid_severities = ["high", "medium", "low"]
+            
+            for inc in output["output_json"]["inconsistencies"]:
+                if inc["type"] not in valid_types:
+                    inc["type"] = "other"
+                if inc["severity"] not in valid_severities:
+                    inc["severity"] = "medium"
+            
+            return output
 
         except Exception as e:
+            # Return a valid structure even in error case
             return {
-                "error": "Could not parse consistency output.",
-                "exception": str(e),
-                "raw_output": raw_response
+                "agent_type": "consistency_agent",
+                "output_json": {
+                    "consistency_summary": "",
+                    "inconsistencies": [],
+                    "consistency_scores": {
+                        "financial_consistency": 0.0,
+                        "narrative_consistency": 0.0,
+                        "metric_consistency": 0.0,
+                        "timeline_consistency": 0.0,
+                        "overall_consistency": 0.0
+                    },
+                    "recommendations": [],
+                    "confidence_score": 0.0,
+                    "error": f"Could not parse consistency analysis: {str(e)}"
+                }
             }
-
-    def _extract_json_block(self, text):
-        """
-        Extracts and parses a JSON object from raw model response.
-        """
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if not match:
-            raise ValueError("No JSON block found in response.")
-        return json.loads(match.group())
 
     def _validate_output_type(self, output):
         """
-        Validates that the output is a dictionary with consistency issues.
+        Validates that the output matches the ai_outputs table structure exactly.
         
         Args:
             output: The parsed output to validate
@@ -102,16 +156,65 @@ class ConsistencyAgent(BaseAgent):
         if not isinstance(output, dict):
             return False
             
-        if "output_type" not in output or output["output_type"] != "consistency_issues":
+        # Check required fields
+        if "agent_type" not in output or output["agent_type"] != "consistency_agent":
             return False
             
-        if "items" not in output or not isinstance(output["items"], list):
+        if "output_json" not in output or not isinstance(output["output_json"], dict):
             return False
             
-        for item in output["items"]:
-            if not isinstance(item, dict):
+        output_json = output["output_json"]
+        
+        # Check required output_json fields
+        required_fields = {
+            "consistency_summary": str,
+            "inconsistencies": list,
+            "consistency_scores": dict,
+            "recommendations": list,
+            "confidence_score": (int, float)
+        }
+        
+        for field, expected_type in required_fields.items():
+            if field not in output_json:
                 return False
-            if not all(k in item for k in ["issue_type", "description", "location"]):
+            if not isinstance(output_json[field], expected_type):
                 return False
                 
+        # Validate inconsistencies
+        valid_types = ["financial", "narrative", "metric", "timeline", "other"]
+        valid_severities = ["high", "medium", "low"]
+        
+        for inc in output_json["inconsistencies"]:
+            if not isinstance(inc, dict):
+                return False
+            if not all(k in inc for k in ["type", "description", "location", "severity", "impact", "resolution"]):
+                return False
+            if inc["type"] not in valid_types:
+                return False
+            if inc["severity"] not in valid_severities:
+                return False
+                
+        # Validate consistency scores
+        required_scores = ["financial_consistency", "narrative_consistency", "metric_consistency", "timeline_consistency", "overall_consistency"]
+        for score in required_scores:
+            if score not in output_json["consistency_scores"]:
+                return False
+            if not isinstance(output_json["consistency_scores"][score], (int, float)):
+                return False
+            if not 0.0 <= output_json["consistency_scores"][score] <= 1.0:
+                return False
+                
+        # Validate confidence score range
+        if not 0.0 <= output_json["confidence_score"] <= 1.0:
+            return False
+                
         return True
+
+    def _extract_json_block(self, text):
+        """
+        Extracts and parses a JSON object from raw model response.
+        """
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if not match:
+            raise ValueError("No JSON block found in response.")
+        return json.loads(match.group())
