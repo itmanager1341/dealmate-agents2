@@ -362,64 +362,63 @@ def generate_memo():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.get("/api/chunks/document/{deal_id}")
-async def get_document_chunks(
-    deal_id: str,
-    section_type: Optional[str] = None,
-    processed: Optional[bool] = None,
-    search: Optional[str] = None
-):
+@app.route('/api/chunks/document/<deal_id>', methods=['GET'])
+def get_document_chunks(deal_id):
     """
     Get document chunks for a deal with optional filtering.
     """
     try:
+        section_type = request.args.get('section_type')
+        processed = request.args.get('processed')
+        search = request.args.get('search')
+        
         query = supabase.table("document_chunks").select("*").eq("deal_id", deal_id)
         
         if section_type:
             query = query.eq("section_type", section_type)
         if processed is not None:
-            query = query.eq("processed_by_ai", processed)
+            query = query.eq("processed_by_ai", processed == 'true')
         if search:
             query = query.ilike("chunk_text", f"%{search}%")
             
-        result = await query.execute()
-        return result.data
+        result = query.execute()
+        return jsonify(result.data)
         
     except Exception as e:
         logger.error(f"Error getting chunks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return jsonify({"error": str(e)}), 500
 
-@app.get("/api/chunks/relationships/{chunk_id}")
-async def get_chunk_relationships(chunk_id: str):
+@app.route('/api/chunks/relationships/<chunk_id>', methods=['GET'])
+def get_chunk_relationships(chunk_id):
     """
     Get relationships for a specific chunk.
     """
     try:
-        result = await supabase.table("chunk_relationships")\
+        result = supabase.table("chunk_relationships")\
             .select("*")\
             .or_(f"parent_chunk_id.eq.{chunk_id},child_chunk_id.eq.{chunk_id}")\
             .execute()
-        return result.data
+        return jsonify(result.data)
         
     except Exception as e:
         logger.error(f"Error getting relationships: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return jsonify({"error": str(e)}), 500
 
-@app.get("/api/chunks/excel-links/{chunk_id}")
-async def get_excel_links(chunk_id: str):
+@app.route('/api/chunks/excel-links/<chunk_id>', methods=['GET'])
+def get_excel_links(chunk_id):
     """
     Get Excel links for a specific chunk.
     """
     try:
-        result = await supabase.table("excel_to_chunk_links")\
+        result = supabase.table("excel_to_chunk_links")\
             .select("*")\
             .eq("document_chunk_id", chunk_id)\
             .execute()
-        return result.data
+        return jsonify(result.data)
         
     except Exception as e:
         logger.error(f"Error getting Excel links: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     print("🚀 DealMate Agent Server Starting...")
