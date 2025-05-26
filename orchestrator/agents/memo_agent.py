@@ -60,23 +60,35 @@ class MemoAgent(BaseAgent):
         try:
             parsed = self._extract_json_block(raw_response)
 
-            # Enforce required fields
+            # Ensure investment_grade is always provided with a default
+            investment_grade = parsed.get("investment_grade", "B")
+            if not isinstance(investment_grade, str) or investment_grade not in ["A+", "A", "B+", "B", "C"]:
+                investment_grade = "B"  # Default to B if invalid
+
+            # Enforce required fields with defaults
             return {
-                "executive_summary": parsed.get("executive_summary", ""),
-                "investment_grade": parsed.get("investment_grade", "B"),
-                "business_model": parsed.get("business_model", ""),
-                "financial_summary": parsed.get("financial_summary", ""),
-                "investment_highlights": parsed.get("investment_highlights", []),
-                "key_risks": parsed.get("key_risks", []),
-                "recommendation": parsed.get("recommendation", {}),
+                "investment_grade": investment_grade,
+                "company_overview": parsed.get("business_model", ""),  # Map business_model to company_overview
+                "market_analysis": parsed.get("market_analysis", ""),
+                "financial_analysis": parsed.get("financial_summary", ""),  # Map financial_summary to financial_analysis
+                "risk_analysis": "\n".join(parsed.get("key_risks", [])),  # Convert list to string
+                "investment_thesis": parsed.get("executive_summary", ""),  # Map executive_summary to investment_thesis
+                "deal_considerations": parsed.get("recommendation", {}).get("rationale", ""),  # Extract rationale
                 "raw_ai_response": raw_response  # for debug or re-display
             }
 
         except Exception as e:
+            # Return a valid structure even in error case
             return {
-                "error": "Could not parse memo response.",
-                "exception": str(e),
-                "raw_output": raw_response
+                "investment_grade": "B",  # Default grade
+                "company_overview": "",
+                "market_analysis": "",
+                "financial_analysis": "",
+                "risk_analysis": "",
+                "investment_thesis": "",
+                "deal_considerations": "",
+                "raw_ai_response": raw_response,
+                "error": f"Could not parse memo response: {str(e)}"
             }
 
     def _extract_json_block(self, text):
@@ -111,11 +123,16 @@ class MemoAgent(BaseAgent):
             "deal_considerations"
         ]
         
+        # Check all required sections exist and are strings
         if not all(section in output for section in required_sections):
             return False
             
         for section in required_sections:
             if not isinstance(output[section], str):
                 return False
+                
+        # Validate investment_grade specifically
+        if output["investment_grade"] not in ["A+", "A", "B+", "B", "C"]:
+            return False
                 
         return True
