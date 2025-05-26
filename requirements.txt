@@ -12,3 +12,4 @@ torch==2.1.2
 torchaudio==2.1.2
 numpy==1.24.4
 supabase==1.1.0
+PyMuPDF==1.23.7
