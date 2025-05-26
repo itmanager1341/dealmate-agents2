@@ -88,3 +88,30 @@ class ConsistencyAgent(BaseAgent):
         if not match:
             raise ValueError("No JSON block found in response.")
         return json.loads(match.group())
+
+    def _validate_output_type(self, output):
+        """
+        Validates that the output is a dictionary with consistency issues.
+        
+        Args:
+            output: The parsed output to validate
+            
+        Returns:
+            bool: True if output is valid, False otherwise
+        """
+        if not isinstance(output, dict):
+            return False
+            
+        if "output_type" not in output or output["output_type"] != "consistency_issues":
+            return False
+            
+        if "items" not in output or not isinstance(output["items"], list):
+            return False
+            
+        for item in output["items"]:
+            if not isinstance(item, dict):
+                return False
+            if not all(k in item for k in ["issue_type", "description", "location"]):
+                return False
+                
+        return True

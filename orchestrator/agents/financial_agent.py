@@ -113,3 +113,24 @@ class FinancialAgent(BaseAgent):
         if "x" in val:
             return "Multiple"
         return ""
+
+    def _validate_output_type(self, output):
+        """
+        Validates that the output is a list of metric dictionaries.
+        
+        Args:
+            output: The parsed output to validate
+            
+        Returns:
+            bool: True if output is valid, False otherwise
+        """
+        if not isinstance(output, list):
+            return False
+            
+        for metric in output:
+            if not isinstance(metric, dict):
+                return False
+            if not all(k in metric for k in ["metric_name", "metric_value"]):
+                return False
+                
+        return True

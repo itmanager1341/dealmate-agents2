@@ -23,7 +23,7 @@ class RiskAgent(BaseAgent):
                 "role": "system",
                 "content": (
                     "You are an M&A analyst. Read the CIM and identify any business, market, or operational risks that "
-                    "could negatively impact an investor’s decision to pursue this deal. Focus on risks mentioned explicitly "
+                    "could negatively impact an investor's decision to pursue this deal. Focus on risks mentioned explicitly "
                     "in the text, and output each risk as a structured object including severity and potential impact."
                 )
             },
@@ -85,3 +85,30 @@ class RiskAgent(BaseAgent):
         if not match:
             raise ValueError("No JSON block found in response.")
         return json.loads(match.group())
+
+    def _validate_output_type(self, output):
+        """
+        Validates that the output is a dictionary with risk items.
+        
+        Args:
+            output: The parsed output to validate
+            
+        Returns:
+            bool: True if output is valid, False otherwise
+        """
+        if not isinstance(output, dict):
+            return False
+            
+        if "output_type" not in output or output["output_type"] != "risk_summary":
+            return False
+            
+        if "items" not in output or not isinstance(output["items"], list):
+            return False
+            
+        for item in output["items"]:
+            if not isinstance(item, dict):
+                return False
+            if not all(k in item for k in ["risk_type", "description", "severity"]):
+                return False
+                
+        return True

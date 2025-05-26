@@ -87,3 +87,35 @@ class MemoAgent(BaseAgent):
         if not match:
             raise ValueError("No JSON block found in response.")
         return json.loads(match.group())
+
+    def _validate_output_type(self, output):
+        """
+        Validates that the output is a dictionary with memo sections.
+        
+        Args:
+            output: The parsed output to validate
+            
+        Returns:
+            bool: True if output is valid, False otherwise
+        """
+        if not isinstance(output, dict):
+            return False
+            
+        required_sections = [
+            "investment_grade",
+            "company_overview",
+            "market_analysis",
+            "financial_analysis",
+            "risk_analysis",
+            "investment_thesis",
+            "deal_considerations"
+        ]
+        
+        if not all(section in output for section in required_sections):
+            return False
+            
+        for section in required_sections:
+            if not isinstance(output[section], str):
+                return False
+                
+        return True

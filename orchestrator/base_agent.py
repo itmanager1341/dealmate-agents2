@@ -46,63 +46,77 @@ class BaseAgent(ABC):
         """
         self.logs.append(f"[{datetime.now().isoformat()}] {message}")
 
-    def execute(self, document_text, deal_id="unknown", context={}):
+    def execute(self, text, deal_id="unknown", context=None):
         """
-        Execute the full agent run: prompt build → model call → response parse → output return.
-
+        Executes the agent's analysis on the provided text.
+        
+        Args:
+            text (str): The text to analyze
+            deal_id (str): Unique identifier for the deal
+            context (dict, optional): Additional context from other agents
+            
         Returns:
-            {
-                "agent": self.agent_name,
-                "deal_id": ...,
-                "output": parsed output,
-                "raw": raw response,
-                "log": internal trace log,
-                "success": True|False
-            }
+            dict: Analysis results with structure:
+                {
+                    "success": bool,
+                    "output": Any,  # Type depends on agent
+                    "error": str,   # If success=False
+                    "log": list     # Execution logs
+                }
         """
-
+        log = []
         try:
-            self.log(f"Starting execution for {self.agent_name}")
-
-            # Build prompt
-            messages = self.build_prompt(document_text, context)
-            self.log(f"Prompt built with {len(messages)} messages")
-
-            # Model call
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.1,
-                max_tokens=3000
-            )
-            raw_output = response.choices[0].message.content
-            self.log("Model response received")
-
-            # Parse and return
-            parsed = self.parse_response(raw_output)
-            self.log("Response parsed successfully")
-
-            return {
-                "agent": self.agent_name,
-                "deal_id": deal_id,
-                "output": parsed,
-                "raw": raw_output,
-                "log": self.logs,
-                "success": True
-            }
-
+            # Log start
+            log.append(f"Starting {self.agent_name} analysis for deal {deal_id}")
+            
+            # Validate input
+            if not isinstance(text, str):
+                raise ValueError(f"Expected string input, got {type(text)}")
+            
+            # Execute analysis
+            result = self.analyze(text, context)
+            
+            # Validate output
+            if not isinstance(result, dict):
+                raise ValueError(f"Expected dict output from analyze(), got {type(result)}")
+            
+            # Parse and validate response
+            try:
+                parsed = self.parse_response(result)
+                if not self._validate_output_type(parsed):
+                    raise ValueError(f"Invalid output type from {self.agent_name}")
+                output = {
+                    "success": True,
+                    "output": parsed,
+                    "log": log
+                }
+            except Exception as e:
+                log.append(f"Error parsing response: {str(e)}")
+                output = {
+                    "success": False,
+                    "error": f"Failed to parse response: {str(e)}",
+                    "log": log
+                }
+            
         except Exception as e:
-            error_id = str(uuid.uuid4())[:8]
-            tb = traceback.format_exc()
-            self.log(f"ERROR [{error_id}]: {str(e)}\n{tb}")
-            return {
-                "agent": self.agent_name,
-                "deal_id": deal_id,
-                "output": None,
-                "raw": None,
-                "log": self.logs,
+            log.append(f"Error in {self.agent_name}: {str(e)}")
+            output = {
                 "success": False,
                 "error": str(e),
-                "trace": tb,
-                "error_id": error_id
+                "log": log
             }
+            
+        return output
+
+    def _validate_output_type(self, output):
+        """
+        Validates that the output matches the expected type for this agent.
+        Override in subclasses to implement specific validation.
+        
+        Args:
+            output: The parsed output to validate
+            
+        Returns:
+            bool: True if output is valid, False otherwise
+        """
+        return True  # Base implementation accepts any output type
