@@ -10,6 +10,7 @@ import os
 import traceback
 import uuid
 import logging
+from typing import Optional, Any
 
 # Initialize OpenAI client (expects OPENAI_API_KEY in env)
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -25,17 +26,12 @@ class BaseAgent(ABC):
         self.model = model
         self.logger = logging.getLogger(f"dealmate.{agent_name}")
         self.logs = []
+        self.openai_client = openai.OpenAI()
 
     @abstractmethod
-    def _get_prompt(self, context):
+    def _get_prompt(self, text: str, context: Optional[dict] = None) -> str:
         """
-        Generates the prompt for the AI model.
-        
-        Args:
-            context: The context to use for generating the prompt
-            
-        Returns:
-            str: The prompt to send to the AI model
+        Builds the prompt for the AI model.
         """
         pass
 
@@ -67,67 +63,59 @@ class BaseAgent(ABC):
         pass
 
     @abstractmethod
-    def _validate_output_type(self, output):
+    def _validate_output_type(self, output: Any) -> bool:
         """
-        Validates that the output matches the expected structure.
-        
-        Args:
-            output: The output to validate
-            
-        Returns:
-            bool: True if the output is valid, False otherwise
+        Validates that the output matches the expected type.
         """
         pass
 
-    def execute(self, document_text, context={}):
+    async def process_chunk(self, chunk: dict) -> dict:
         """
-        Executes the agent's analysis on the given document text.
+        Processes a single document chunk.
         
         Args:
-            document_text: The text of the document to analyze
-            context: Additional context for the analysis
+            chunk: Dictionary containing chunk data
             
         Returns:
-            dict: The analysis results
+            dict: Processing results
         """
         try:
-            # Generate prompt
-            prompt = self.build_prompt(document_text, context)
+            # Get prompt for this chunk
+            prompt = self._get_prompt(chunk["chunk_text"], {
+                "chunk_id": chunk["id"],
+                "section_type": chunk["section_type"],
+                "section_title": chunk["section_title"]
+            })
             
             # Call AI model
-            response = self._call_ai_model(prompt)
+            response = await self._call_ai_model(prompt)
             
-            # Parse response
-            parsed = self.parse_response(response)
+            # Parse and validate response
+            result = self.parse_response(response)
+            if not self._validate_output_type(result):
+                raise ValueError("Invalid output type")
             
-            # Validate output
-            if not self._validate_output_type(parsed):
-                raise ValueError(f"Invalid output structure from {self.agent_name}")
-                
-            return parsed
+            return result
             
         except Exception as e:
-            self.logger.error(f"Error in {self.agent_name}: {str(e)}")
-            raise
+            self.logger.error(f"Error processing chunk {chunk['id']}: {str(e)}")
+            return {
+                "error": str(e),
+                "status": "error",
+                "chunk_id": chunk["id"]
+            }
 
-    def _call_ai_model(self, prompt):
+    async def _call_ai_model(self, prompt: str) -> str:
         """
-        Calls the AI model with the given prompt.
-        
-        Args:
-            prompt: The prompt to send to the AI model
-            
-        Returns:
-            str: The response from the AI model
+        Calls the OpenAI API with the given prompt.
         """
         try:
-            response = client.chat.completions.create(
-                model=self.model,
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4-turbo-preview",
                 messages=[
-                    {"role": "system", "content": "You are a professional M&A analyst."},
+                    {"role": "system", "content": "You are a DealMate agent."},
                     {"role": "user", "content": prompt}
-                ],
-                temperature=0.1
+                ]
             )
             return response.choices[0].message.content
         except Exception as e:

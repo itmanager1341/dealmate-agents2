@@ -15,6 +15,8 @@ import traceback
 import logging
 from orchestrator.cim_orchestrator import CIMOrchestrator
 from orchestrator.supabase import supabase
+from typing import Optional
+from fastapi import HTTPException
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -359,6 +361,65 @@ def generate_memo():
         print(f"Memo generation error: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+@app.get("/api/chunks/document/{deal_id}")
+async def get_document_chunks(
+    deal_id: str,
+    section_type: Optional[str] = None,
+    processed: Optional[bool] = None,
+    search: Optional[str] = None
+):
+    """
+    Get document chunks for a deal with optional filtering.
+    """
+    try:
+        query = supabase.table("document_chunks").select("*").eq("deal_id", deal_id)
+        
+        if section_type:
+            query = query.eq("section_type", section_type)
+        if processed is not None:
+            query = query.eq("processed_by_ai", processed)
+        if search:
+            query = query.ilike("chunk_text", f"%{search}%")
+            
+        result = await query.execute()
+        return result.data
+        
+    except Exception as e:
+        logger.error(f"Error getting chunks: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/chunks/relationships/{chunk_id}")
+async def get_chunk_relationships(chunk_id: str):
+    """
+    Get relationships for a specific chunk.
+    """
+    try:
+        result = await supabase.table("chunk_relationships")\
+            .select("*")\
+            .or_(f"parent_chunk_id.eq.{chunk_id},child_chunk_id.eq.{chunk_id}")\
+            .execute()
+        return result.data
+        
+    except Exception as e:
+        logger.error(f"Error getting relationships: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/chunks/excel-links/{chunk_id}")
+async def get_excel_links(chunk_id: str):
+    """
+    Get Excel links for a specific chunk.
+    """
+    try:
+        result = await supabase.table("excel_to_chunk_links")\
+            .select("*")\
+            .eq("document_chunk_id", chunk_id)\
+            .execute()
+        return result.data
+        
+    except Exception as e:
+        logger.error(f"Error getting Excel links: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == '__main__':
     print("🚀 DealMate Agent Server Starting...")

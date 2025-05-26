@@ -29,6 +29,17 @@ Stores AI agent outputs and analysis results.
 | created_by | uuid | YES | null | User who created the output |
 | created_at | timestamptz | YES | now() | Creation timestamp |
 
+### chunk_relationships
+Maintains context and relationships between document chunks.
+| Column | Type | Nullable | Default | Description |
+|--------|------|----------|---------|-------------|
+| id | uuid | NO | gen_random_uuid() | Primary key |
+| parent_chunk_id | uuid | NO | null | Reference to parent chunk |
+| child_chunk_id | uuid | NO | null | Reference to child chunk |
+| relationship_type | text | NO | null | Type of relationship |
+| strength | numeric | YES | 1.0 | Relationship strength |
+| created_at | timestamptz | NO | now() | Creation timestamp |
+
 ### cim_analysis
 Stores comprehensive CIM analysis results.
 | Column | Type | Nullable | Default | Description |
@@ -48,6 +59,17 @@ Stores comprehensive CIM analysis results.
 | raw_ai_response | jsonb | YES | null | Raw AI response data |
 | created_at | timestamptz | NO | now() | Creation timestamp |
 | updated_at | timestamptz | NO | now() | Last update timestamp |
+
+### comparisons
+Stores deal comparisons and analysis.
+| Column | Type | Nullable | Default | Description |
+|--------|------|----------|---------|-------------|
+| id | uuid | NO | gen_random_uuid() | Primary key |
+| user_id | uuid | YES | null | Reference to users table |
+| name | text | YES | null | Comparison name |
+| deal_ids | ARRAY | YES | null | Array of deal IDs |
+| comparison_json | jsonb | YES | null | Structured comparison data |
+| created_at | timestamptz | YES | now() | Creation timestamp |
 
 ### deal_metrics
 Stores individual deal metrics and KPIs.
@@ -77,6 +99,27 @@ Stores deal information and metadata.
 | created_at | timestamptz | YES | now() | Creation timestamp |
 | updated_at | timestamptz | YES | now() | Last update timestamp |
 
+### document_chunks
+Stores document chunks for RAG and processing.
+| Column | Type | Nullable | Default | Description |
+|--------|------|----------|---------|-------------|
+| id | uuid | NO | gen_random_uuid() | Primary key |
+| document_id | uuid | NO | null | Reference to documents table |
+| deal_id | uuid | NO | null | Reference to deals table |
+| chunk_text | text | NO | null | Chunk content |
+| chunk_index | integer | NO | null | Chunk sequence number |
+| chunk_size | integer | NO | null | Size in tokens/characters |
+| start_page | integer | YES | null | Starting page number |
+| end_page | integer | YES | null | Ending page number |
+| section_type | text | YES | null | Type of section |
+| section_title | text | YES | null | Section title |
+| metadata | jsonb | YES | '{}' | Additional metadata |
+| processed_by_ai | boolean | YES | false | AI processing status |
+| ai_output | jsonb | YES | null | AI analysis results |
+| confidence_score | numeric | YES | null | Processing confidence |
+| created_at | timestamptz | NO | now() | Creation timestamp |
+| updated_at | timestamptz | NO | now() | Last update timestamp |
+
 ### documents
 Stores document metadata and processing status.
 | Column | Type | Nullable | Default | Description |
@@ -94,6 +137,17 @@ Stores document metadata and processing status.
 | file_path | text | YES | null | File system path |
 | size | integer | YES | null | File size in bytes |
 | processed | boolean | YES | false | Processing status |
+
+### excel_to_chunk_links
+Links Excel chunks to document chunks.
+| Column | Type | Nullable | Default | Description |
+|--------|------|----------|---------|-------------|
+| id | uuid | NO | gen_random_uuid() | Primary key |
+| xlsx_chunk_id | uuid | NO | null | Reference to xlsx_chunks |
+| document_chunk_id | uuid | NO | null | Reference to document_chunks |
+| relationship_type | text | NO | null | Type of relationship |
+| confidence | numeric | YES | 1.0 | Link confidence score |
+| created_at | timestamptz | NO | now() | Creation timestamp |
 
 ### transcripts
 Stores document transcriptions.
@@ -132,19 +186,33 @@ Stores Excel file chunks and data.
    - One deal can have multiple documents
    - `deals.id` → `documents.deal_id`
 
-2. **Documents → Analysis**
+2. **Documents → Document Chunks**
+   - One document can have multiple chunks
+   - `documents.id` → `document_chunks.document_id`
+
+3. **Document Chunks → Relationships**
+   - Chunks can have multiple relationships
+   - `document_chunks.id` → `chunk_relationships.parent_chunk_id`
+   - `document_chunks.id` → `chunk_relationships.child_chunk_id`
+
+4. **Excel Chunks → Document Chunks**
+   - Excel chunks can be linked to document chunks
+   - `xlsx_chunks.id` → `excel_to_chunk_links.xlsx_chunk_id`
+   - `document_chunks.id` → `excel_to_chunk_links.document_chunk_id`
+
+5. **Documents → Analysis**
    - One document can have multiple analyses
    - `documents.id` → `cim_analysis.document_id`
 
-3. **Deals → Metrics**
+6. **Deals → Metrics**
    - One deal can have multiple metrics
    - `deals.id` → `deal_metrics.deal_id`
 
-4. **Documents → Transcripts**
+7. **Documents → Transcripts**
    - One document can have one transcript
    - `documents.id` → `transcripts.document_id`
 
-5. **Users → Deals**
+8. **Users → Deals**
    - One user can have multiple deals
    - `users.id` → `deals.user_id`
 
@@ -153,6 +221,7 @@ Stores Excel file chunks and data.
 1. **Required Fields**:
    - `cim_analysis.investment_grade` (NOT NULL)
    - `deals.name` (NOT NULL)
+   - `document_chunks.chunk_text` (NOT NULL)
    - All primary keys (id fields) are NOT NULL
 
 2. **Default Values**:
@@ -160,6 +229,8 @@ Stores Excel file chunks and data.
    - `deal_metrics.pinned` defaults to false
    - `documents.is_audio` defaults to false
    - `xlsx_chunks.verified_by_user` defaults to false
+   - `document_chunks.metadata` defaults to '{}'
+   - `document_chunks.processed_by_ai` defaults to false
 
 3. **Timestamps**:
    - Most tables have `created_at` with default `now()`
