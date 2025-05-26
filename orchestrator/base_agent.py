@@ -127,3 +127,48 @@ class BaseAgent(ABC):
         Add a timestamped message to the internal log for traceability.
         """
         self.logs.append(f"[{datetime.now().isoformat()}] {message}")
+
+    def execute(self, document_text: str, context: Optional[dict] = None) -> dict:
+        """
+        Execute the agent's analysis on the provided document text.
+        
+        Args:
+            document_text: The text of the document to analyze
+            context: Additional context for the analysis
+            
+        Returns:
+            dict: Analysis results with status and output
+        """
+        try:
+            # Build prompt
+            prompt = self.build_prompt(document_text, context)
+            
+            # Call AI model
+            response = self.openai_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a DealMate agent."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            # Parse response
+            result = self.parse_response(response.choices[0].message.content)
+            
+            # Validate output
+            if not self._validate_output_type(result):
+                raise ValueError("Invalid output type")
+            
+            return {
+                "status": "success",
+                "output": result,
+                "error": None
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error executing {self.agent_name}: {str(e)}")
+            return {
+                "status": "error",
+                "output": None,
+                "error": str(e)
+            }
