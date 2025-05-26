@@ -62,16 +62,26 @@ class BaseAgent(ABC):
                 }
             ).execute()
 
+            self.logger.info(f"Model config RPC response: {response.data}")
+
+            model_id = None
             if response.data:
-                self.model_id = response.data
-                # Get model details
-                model_details = supabase.table('ai_models').select('*').eq('id', self.model_id).single().execute()
-                if model_details.data:
-                    self.model_config = model_details.data
-                else:
-                    raise ValueError(f"Model {self.model_id} not found")
-            else:
+                if isinstance(response.data, list) and response.data:
+                    model_id = response.data[0]
+                elif isinstance(response.data, dict) and 'model_id' in response.data:
+                    model_id = response.data['model_id']
+                elif isinstance(response.data, str):
+                    model_id = response.data
+
+            if not model_id:
                 raise ValueError("No effective model configuration found")
+            self.model_id = model_id
+            # Get model details
+            model_details = supabase.table('ai_models').select('*').eq('id', self.model_id).single().execute()
+            if model_details.data:
+                self.model_config = model_details.data
+            else:
+                raise ValueError(f"Model {self.model_id} not found")
         except Exception as e:
             self.logger.error(f"Error loading model configuration: {str(e)}")
             raise
