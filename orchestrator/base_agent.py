@@ -20,7 +20,7 @@ client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # Initialize Supabase client
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL", ""),
-    os.getenv("SUPABASE_KEY", "")
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 )
 
 class BaseAgent(ABC):
