@@ -103,7 +103,7 @@ class CIMOrchestrator:
         try:
             # Run financial agent
             try:
-                financial_result = self.agents["financial"].execute(document_text, deal_id)
+                financial_result = self.agents["financial"].execute(document_text, context={"deal_id": deal_id})
                 results["results"]["financial"]["output"] = financial_result
             except Exception as e:
                 results["results"]["financial"]["status"] = "error"
@@ -112,7 +112,7 @@ class CIMOrchestrator:
             
             # Run risk agent
             try:
-                risk_result = self.agents["risk"].execute(document_text, deal_id)
+                risk_result = self.agents["risk"].execute(document_text, context={"deal_id": deal_id})
                 results["results"]["risk"]["output"] = risk_result
             except Exception as e:
                 results["results"]["risk"]["status"] = "error"
@@ -123,8 +123,8 @@ class CIMOrchestrator:
             try:
                 consistency_result = self.agents["consistency"].execute(
                     document_text,
-                    deal_id=deal_id,
                     context={
+                        "deal_id": deal_id,
                         "financial_metrics": results["results"]["financial"]["output"],
                         "risks": results["results"]["risk"]["output"].get("items", [])
                     }
@@ -138,11 +138,12 @@ class CIMOrchestrator:
             # Run memo agent with context from other agents
             try:
                 context = {
+                    "deal_id": deal_id,
                     "financial_metrics": results["results"]["financial"]["output"],
                     "risks": results["results"]["risk"]["output"].get("items", []),
                     "consistency_analysis": results["results"]["consistency"]["output"]
                 }
-                memo_result = self.agents["memo"].execute(document_text, deal_id=deal_id, context=context)
+                memo_result = self.agents["memo"].execute(document_text, context=context)
                 results["results"]["memo"]["output"] = memo_result
             except Exception as e:
                 results["results"]["memo"]["status"] = "error"
