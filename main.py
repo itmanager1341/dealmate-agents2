@@ -243,13 +243,45 @@ def process_cim():
             logger.error("Empty file provided")
             return jsonify({"error": "Empty file"}), 400
 
-        # Get deal_id from request
+        # Get deal_id from request form data
         deal_id = request.form.get('deal_id')
         if not deal_id:
-            logger.error("No deal_id provided")
+            logger.error("No deal_id provided in form data")
             return jsonify({"error": "No deal_id provided"}), 400
 
-        logger.info(f"Processing CIM for deal_id: {deal_id}")
+        # --- User ID Extraction ---
+        user_id = None  # Initialize to None
+
+        # 1. Attempt to get user_id from Authorization header (JWT)
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            try:
+                # Ensure your global 'supabase' client is configured for auth
+                user_response = supabase.auth.get_user(token)
+                if user_response.user:
+                    user_id = user_response.user.id
+                    logger.info(f"Authenticated user_id from header: {user_id}")
+                else:
+                    logger.warning("Invalid token or user not found via header.")
+            except Exception as auth_e:
+                logger.error(f"Header auth error: {auth_e}. Token might be invalid or expired.")
+        
+        # 2. If not found in header, attempt to get user_id from FormData (fallback)
+        if not user_id:
+            form_user_id = request.form.get('user_id')
+            if form_user_id:
+                user_id = form_user_id
+                logger.info(f"Using user_id from FormData: {user_id}")
+            # Optional: Add further validation for form_user_id if necessary
+
+        if not user_id:
+            logger.warning("No user_id obtained from header or FormData. Proceeding with user_id=None.")
+            # This means the system will try to find a model config for user_id=None.
+            # Ensure your Supabase function get_effective_model_config handles this case,
+            # potentially falling back to a global default model if no specific config for user_id=None exists.
+
+        logger.info(f"Processing CIM for deal_id: {deal_id}, user_id: {user_id}")
 
         # Save file temporarily
         tmp_file = tempfile.NamedTemporaryFile(delete=False)
@@ -257,19 +289,20 @@ def process_cim():
         tmp_file.close()
 
         try:
-            # Initialize orchestrator
-            logger.info("Initializing CIM orchestrator")
-            orchestrator = CIMOrchestrator()
+            # Initialize orchestrator with extracted user_id and deal_id
+            logger.info(f"Initializing CIM orchestrator with user_id={user_id}, deal_id={deal_id}")
+            orchestrator = CIMOrchestrator(user_id=user_id, deal_id=deal_id)
             
             # Extract text from PDF
             logger.info("Extracting text from PDF")
             document_text = orchestrator.load_pdf_text(tmp_file.name)
             if not document_text.strip():
+                logger.error("No text could be extracted from the PDF")
                 raise ValueError("No text could be extracted from the PDF")
 
-            # Run all agents
+            # Run all agents - user_id and deal_id are now handled by agent initialization
             logger.info("Running all agents")
-            result = orchestrator.run_all_agents(document_text, deal_id)
+            result = orchestrator.run_all_agents(document_text) # deal_id argument removed
             
             # Process results
             if result["status"] == "error":
