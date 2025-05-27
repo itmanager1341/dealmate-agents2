@@ -302,57 +302,117 @@ def process_cim():
 
             # Run all agents - user_id and deal_id are now handled by agent initialization
             logger.info("Running all agents")
-            result = orchestrator.run_all_agents(document_text) # deal_id argument removed
+            agent_results = orchestrator.run_all_agents(document_text) # Renamed for clarity
             
             # Process results
-            if result["status"] == "error":
-                logger.error(f"Processing failed: {result['errors']}")
-                return jsonify({"error": "Processing failed", "details": result["errors"]}), 500
+            # Check if any agent failed
+            processing_errors = []
+            overall_status_is_error = False
+            for agent_name, res in agent_results.items():
+                if res.get("status") == "error":
+                    overall_status_is_error = True
+                    error_detail = f"Agent '{agent_name}' failed: {res.get('error', 'Unknown error')}"
+                    processing_errors.append(error_detail)
+                    logger.error(error_detail)
+            
+            if overall_status_is_error:
+                logger.error(f"Processing failed due to agent errors: {processing_errors}")
+                # Store errors in agent_logs before returning
+                for err_msg in processing_errors:
+                    try:
+                        supabase.table('agent_logs').insert({
+                            "deal_id": deal_id, # deal_id is available in this scope
+                            "user_id": user_id, # user_id is available in this scope
+                            "agent_type": "orchestrator_summary", # Or derive from err_msg if possible
+                            "log_type": "error",
+                            "message": err_msg
+                        }).execute()
+                    except Exception as db_err:
+                        logger.error(f"Failed to log orchestrator error to DB: {db_err}")
+                return jsonify({"error": "Processing failed", "details": processing_errors}), 500
 
-            # Extract results from each agent
-            financial_result = result["results"]["financial"]
-            risk_result = result["results"]["risk"]
-            consistency_result = result["results"]["consistency"]
-            memo_result = result["results"]["memo"]
+            # Extract results from each agent, now directly from agent_results
+            financial_result = agent_results.get("financial", {"status": "not_run", "output": [], "error": "Financial agent did not run or return result"})
+            risk_result = agent_results.get("risk", {"status": "not_run", "output": {}, "error": "Risk agent did not run or return result"})
+            consistency_result = agent_results.get("consistency", {"status": "not_run", "output": {}, "error": "Consistency agent did not run or return result"})
+            memo_result = agent_results.get("memo", {"status": "not_run", "output": {}, "error": "Memo agent did not run or return result"})
+
+            inserted_data_counts = {"deal_metrics": 0, "ai_outputs_risk": 0, "ai_outputs_consistency": 0, "cim_analysis": 0}
 
             # Store results in Supabase
-            if financial_result["status"] == "success" and financial_result["output"]:
+            if financial_result.get("status") == "success" and financial_result.get("output"):
                 logger.info("Storing financial metrics")
-                supabase.table('deal_metrics').insert(financial_result["output"]).execute()
+                # Ensure output is a list of dicts for batch insert
+                metrics_to_insert = financial_result["output"]
+                if isinstance(metrics_to_insert, list) and all(isinstance(m, dict) for m in metrics_to_insert):
+                    for metric in metrics_to_insert: # Add deal_id to each metric
+                        metric['deal_id'] = deal_id
+                    db_response = supabase.table('deal_metrics').insert(metrics_to_insert).execute()
+                    inserted_data_counts["deal_metrics"] = len(db_response.data) if db_response.data else 0
+                else:
+                    logger.error(f"Financial agent output is not a list of dicts: {type(metrics_to_insert)}")
             
-            if risk_result["status"] == "success" and risk_result["output"]:
+            # For risk and consistency, they are stored in ai_outputs
+            # Risk Agent Output
+            if risk_result.get("status") == "success" and risk_result.get("output"):
                 logger.info("Storing risk analysis")
-                supabase.table('ai_outputs').insert(risk_result["output"]).execute()
-            
-            if consistency_result["status"] == "success" and consistency_result["output"]:
-                logger.info("Storing consistency analysis")
-                supabase.table('ai_outputs').insert(consistency_result["output"]).execute()
-            
-            if memo_result["status"] == "success" and memo_result["output"]:
-                logger.info("Storing investment memo")
-                supabase.table('cim_analysis').insert(memo_result["output"]).execute()
+                risk_output_to_insert = risk_result["output"]
+                if isinstance(risk_output_to_insert, dict):
+                    risk_output_to_insert['deal_id'] = deal_id # Add deal_id
+                    risk_output_to_insert['agent_type'] = 'risk' # Ensure agent_type is set
+                    db_response = supabase.table('ai_outputs').insert(risk_output_to_insert).execute()
+                    inserted_data_counts["ai_outputs_risk"] = len(db_response.data) if db_response.data else 0
+                else:
+                    logger.error(f"Risk agent output is not a dict: {type(risk_output_to_insert)}")
 
-            # Store any errors in agent_logs
-            if result["errors"]:
-                logger.warning(f"Storing {len(result['errors'])} errors in agent_logs")
-                for error in result["errors"]:
+            # Consistency Agent Output
+            if consistency_result.get("status") == "success" and consistency_result.get("output"):
+                logger.info("Storing consistency analysis")
+                consistency_output_to_insert = consistency_result["output"]
+                if isinstance(consistency_output_to_insert, dict):
+                    consistency_output_to_insert['deal_id'] = deal_id # Add deal_id
+                    consistency_output_to_insert['agent_type'] = 'consistency' # Ensure agent_type is set
+                    db_response = supabase.table('ai_outputs').insert(consistency_output_to_insert).execute()
+                    inserted_data_counts["ai_outputs_consistency"] = len(db_response.data) if db_response.data else 0
+                else:
+                    logger.error(f"Consistency agent output is not a dict: {type(consistency_output_to_insert)}")
+            
+            if memo_result.get("status") == "success" and memo_result.get("output"):
+                logger.info("Storing investment memo")
+                memo_output_to_insert = memo_result["output"]
+                if isinstance(memo_output_to_insert, dict):
+                    memo_output_to_insert['deal_id'] = deal_id # Add deal_id
+                    db_response = supabase.table('cim_analysis').insert(memo_output_to_insert).execute()
+                    inserted_data_counts["cim_analysis"] = len(db_response.data) if db_response.data else 0
+                else:
+                    logger.error(f"Memo agent output is not a dict: {type(memo_output_to_insert)}")
+
+            # Storing agent execution logs (success or specific errors if any)
+            for agent_name, res in agent_results.items():
+                log_message = res.get('error') if res.get("status") == "error" else f"Agent {agent_name} completed with status: {res.get('status')}"
+                try:
                     supabase.table('agent_logs').insert({
                         "deal_id": deal_id,
-                        "agent_type": "orchestrator",
-                        "log_type": "error",
-                        "message": error
+                        "user_id": user_id,
+                        "agent_type": agent_name,
+                        "log_type": "error" if res.get("status") == "error" else "info",
+                        "message": log_message
+                        # Consider adding "input_payload" and "output_payload" if relevant and available
                     }).execute()
+                except Exception as db_log_err:
+                    logger.error(f"Failed to log execution for agent {agent_name} to DB: {db_log_err}")
 
             logger.info("CIM processing completed successfully")
             return jsonify({
                 "status": "success",
                 "message": "CIM processed successfully",
-                "results": {
-                    "financial": financial_result["status"],
-                    "risk": risk_result["status"],
-                    "consistency": consistency_result["status"],
-                    "memo": memo_result["status"]
-                }
+                "results_summary": {
+                    "financial": financial_result.get("status", "not_run"),
+                    "risk": risk_result.get("status", "not_run"),
+                    "consistency": consistency_result.get("status", "not_run"),
+                    "memo": memo_result.get("status", "not_run")
+                },
+                "inserted_counts": inserted_data_counts
             })
 
         finally:
