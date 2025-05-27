@@ -52,7 +52,10 @@ class BaseAgent(ABC):
         Uses the get_effective_model_config function to determine which model to use.
         """
         try:
-            # Get the effective model configuration
+            # Log parameters
+            self.logger.info(
+                f"Calling get_effective_model_config with user_id={self.user_id}, deal_id={self.deal_id}, use_case={self._get_use_case()}"
+            )
             response = supabase.rpc(
                 'get_effective_model_config',
                 {
@@ -61,17 +64,21 @@ class BaseAgent(ABC):
                     'p_use_case': self._get_use_case()
                 }
             ).execute()
-
-            self.logger.info(f"Model config RPC response: {response.data}")
+            self.logger.info(f"Model config RPC response: {response.data} (type: {type(response.data)})")
 
             model_id = None
-            if response.data:
-                if isinstance(response.data, list) and response.data:
+            # Handle the most common and robust cases
+            if isinstance(response.data, list) and response.data:
+                # Scalar return: [model_id]
+                if isinstance(response.data[0], str):
                     model_id = response.data[0]
-                elif isinstance(response.data, dict) and 'model_id' in response.data:
-                    model_id = response.data['model_id']
-                elif isinstance(response.data, str):
-                    model_id = response.data
+                # Record return: [{'model_id': ...}]
+                elif isinstance(response.data[0], dict) and 'model_id' in response.data[0]:
+                    model_id = response.data[0]['model_id']
+            elif isinstance(response.data, str):
+                model_id = response.data
+            elif isinstance(response.data, dict) and 'model_id' in response.data:
+                model_id = response.data['model_id']
 
             if not model_id:
                 raise ValueError("No effective model configuration found")
