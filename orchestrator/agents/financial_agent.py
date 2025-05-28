@@ -2,9 +2,10 @@
 # Agent to extract normalized KPIs and deal metrics from unstructured CIM text
 
 from orchestrator.base_agent import BaseAgent
+from orchestrator.tools import Tool, TOOL_REGISTRY
 import re
 import json
-from typing import Optional
+from typing import Optional, Dict
 
 class FinancialAgent(BaseAgent):
     """
@@ -12,15 +13,28 @@ class FinancialAgent(BaseAgent):
     Output is parsed into metric blocks compatible with the `deal_metrics` Supabase table.
     """
 
-    def __init__(self, user_id: Optional[str] = None, deal_id: Optional[str] = None):
+    def __init__(
+        self,
+        agent_name: str = "financial_agent",
+        user_id: Optional[str] = None,
+        deal_id: Optional[str] = None,
+        toolbox: Dict[str, Tool] = None
+    ):
         """
         Initialize the financial agent.
         
         Args:
+            agent_name: Name of the agent
             user_id: Optional user ID for model configuration
             deal_id: Optional deal ID for model configuration
+            toolbox: Optional dictionary of tools to use. Defaults to TOOL_REGISTRY.
         """
-        super().__init__(agent_name="financial_agent", user_id=user_id, deal_id=deal_id)
+        super().__init__(
+            agent_name=agent_name,
+            user_id=user_id,
+            deal_id=deal_id,
+            toolbox=toolbox
+        )
 
     def _get_use_case(self) -> str:
         """

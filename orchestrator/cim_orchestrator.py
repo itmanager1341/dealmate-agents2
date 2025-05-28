@@ -1,13 +1,13 @@
 # cim_orchestrator.py
 # Coordinates multi-agent analysis of CIM documents
 
-import fitz  # PyMuPDF
+import logging
+from typing import List, Optional, Dict, Any
 from orchestrator.agents.financial_agent import FinancialAgent
 from orchestrator.agents.risk_agent import RiskAgent
 from orchestrator.agents.memo_agent import MemoAgent
 from orchestrator.agents.consistency_agent import ConsistencyAgent
-from typing import List, Optional, Dict, Any
-import logging
+from orchestrator.tools import TOOL_REGISTRY
 
 class CIMOrchestrator:
     """
@@ -26,42 +26,88 @@ class CIMOrchestrator:
         self.logger = logging.getLogger(__name__)
         self.user_id = user_id
         self.deal_id = deal_id
+        
+        # Initialize toolbox once for all agents
+        self.toolbox = TOOL_REGISTRY
+        
+        # Initialize agents with shared toolbox
         self.agents = {
-            'financial': FinancialAgent(user_id=user_id, deal_id=deal_id),
-            'risk': RiskAgent(user_id=user_id, deal_id=deal_id),
-            'memo': MemoAgent(user_id=user_id, deal_id=deal_id),
-            'consistency': ConsistencyAgent(user_id=user_id, deal_id=deal_id)
+            'financial': FinancialAgent(
+                agent_name='financial',
+                user_id=user_id,
+                deal_id=deal_id,
+                toolbox=self.toolbox
+            ),
+            'risk': RiskAgent(
+                agent_name='risk',
+                user_id=user_id,
+                deal_id=deal_id,
+                toolbox=self.toolbox
+            ),
+            'memo': MemoAgent(
+                agent_name='memo',
+                user_id=user_id,
+                deal_id=deal_id,
+                toolbox=self.toolbox
+            ),
+            'consistency': ConsistencyAgent(
+                agent_name='consistency',
+                user_id=user_id,
+                deal_id=deal_id,
+                toolbox=self.toolbox
+            )
         }
 
-    def load_pdf_text(self, file_path):
+    def load_pdf_text(self, file_path: str) -> str:
         """
-        Uses PyMuPDF to extract full text from a PDF CIM, handling complex layouts.
+        Extract text from a PDF file using the pdf_to_text tool.
+        
+        Args:
+            file_path: Path to the PDF file
+            
+        Returns:
+            str: Extracted text content
         """
-        doc = fitz.open(file_path)
-        full_text = []
+        try:
+            result = self.toolbox['pdf_to_text'].run(file_path=file_path)
+            return result['text']
+        except Exception as e:
+            self.logger.error(f"Error extracting text from PDF: {str(e)}")
+            raise
+
+    def process_excel(self, file_path: str) -> Dict[str, Any]:
+        """
+        Process Excel file using the excel_to_json tool.
         
-        for page in doc:
-            # Extract text with layout preservation
-            blocks = page.get_text("blocks")
+        Args:
+            file_path: Path to the Excel file
             
-            for block in blocks:
-                # block[4] contains the text
-                text = block[4].strip()
-                if text:
-                    # Add page number for reference
-                    full_text.append(f"[Page {page.number + 1}] {text}")
-            
-            # Extract tables if present
-            tables = page.find_tables()
-            if tables:
-                for table in tables:
-                    table_text = []
-                    for row in table.extract():
-                        table_text.append(" | ".join(str(cell) for cell in row))
-                    full_text.append("\n".join(table_text))
+        Returns:
+            Dict[str, Any]: Structured JSON data from Excel
+        """
+        try:
+            result = self.toolbox['excel_to_json'].run(file_path=file_path)
+            return result
+        except Exception as e:
+            self.logger.error(f"Error processing Excel file: {str(e)}")
+            raise
+
+    def transcribe_audio(self, file_path: str) -> Dict[str, Any]:
+        """
+        Transcribe audio file using the whisper_transcribe tool.
         
-        # Join all text with proper spacing
-        return "\n\n".join(full_text)
+        Args:
+            file_path: Path to the audio file
+            
+        Returns:
+            Dict[str, Any]: Transcription results including text and metadata
+        """
+        try:
+            result = self.toolbox['whisper_transcribe'].run(file_path=file_path)
+            return result
+        except Exception as e:
+            self.logger.error(f"Error transcribing audio: {str(e)}")
+            raise
 
     def run_all_agents(self, document_text: str) -> Dict[str, Any]:
         """

@@ -10,9 +10,10 @@ import os
 import traceback
 import uuid
 import logging
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict, Type
 import tiktoken
 from supabase import create_client, Client
+from .tools import Tool, TOOL_REGISTRY
 
 # Initialize OpenAI client (expects OPENAI_API_KEY in env)
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -29,7 +30,13 @@ class BaseAgent(ABC):
     Defines the interface and common functionality for agent implementations.
     """
 
-    def __init__(self, agent_name: str, user_id: Optional[str] = None, deal_id: Optional[str] = None):
+    def __init__(
+        self,
+        agent_name: str,
+        user_id: Optional[str] = None,
+        deal_id: Optional[str] = None,
+        toolbox: Dict[str, Tool] = None
+    ):
         """
         Initialize the agent with user and deal context.
         
@@ -37,6 +44,7 @@ class BaseAgent(ABC):
             agent_name: Name of the agent
             user_id: Optional user ID for model configuration
             deal_id: Optional deal ID for model configuration
+            toolbox: Optional dictionary of tools to use. Defaults to TOOL_REGISTRY.
         """
         self.agent_name = agent_name
         self.user_id = user_id
@@ -44,7 +52,44 @@ class BaseAgent(ABC):
         self.logger = logging.getLogger(f"dealmate.{agent_name}")
         self.logs = []
         self.openai_client = openai.OpenAI()
+        self.toolbox = toolbox or TOOL_REGISTRY
         self._load_model_config()
+
+    def get_tool(self, name: str) -> Tool:
+        """
+        Get a tool from the toolbox by name.
+        
+        Args:
+            name: Name of the tool to get
+            
+        Returns:
+            Tool: The requested tool
+            
+        Raises:
+            KeyError: If the tool is not found in the toolbox
+        """
+        if name not in self.toolbox:
+            raise KeyError(f"Tool '{name}' not found in toolbox")
+        return self.toolbox[name]
+
+    def run_with_tool(self, tool_name: str, **kwargs) -> Dict[str, Any]:
+        """
+        Run a tool with the given arguments.
+        
+        Args:
+            tool_name: Name of the tool to run
+            **kwargs: Arguments to pass to the tool
+            
+        Returns:
+            Dict[str, Any]: Tool execution results
+            
+        Raises:
+            KeyError: If the tool is not found
+            ValueError: If required arguments are missing
+            RuntimeError: If tool execution fails
+        """
+        tool = self.get_tool(tool_name)
+        return tool.run(**kwargs)
 
     def _load_model_config(self):
         """

@@ -1,7 +1,12 @@
-# Updated main.py with CIM processing - compatible with existing structure
+"""
+DealMate AI Agent Server - Main Application
+
+This module provides the main Flask application for the DealMate AI Agent Server,
+handling various endpoints for document processing, transcription, and analysis.
+"""
+
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-import whisper
 import openai
 from openai import OpenAI
 import os
@@ -15,6 +20,7 @@ import traceback
 import logging
 from orchestrator.cim_orchestrator import CIMOrchestrator
 from orchestrator.supabase import supabase
+from orchestrator.tools import TOOL_REGISTRY
 from typing import Optional
 from fastapi import HTTPException
 
@@ -27,21 +33,6 @@ CORS(app)  # Enable CORS for all routes
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-
-# Global variables for models
-whisper_model = None
-
-def load_whisper_model():
-    """Load Whisper model on startup"""
-    global whisper_model
-    try:
-        print("⚡ Pre-loading Whisper model...")
-        whisper_model = whisper.load_model("base")
-        print("✅ Whisper model loaded successfully!")
-        return True
-    except Exception as e:
-        print(f"❌ Failed to load Whisper model: {e}")
-        return False
 
 @app.route('/', methods=['GET'])
 def root():
@@ -66,7 +57,7 @@ def root():
 def health_check():
     """Health check endpoint"""
     openai_status = "configured" if os.getenv('OPENAI_API_KEY') else "missing_key"
-    whisper_status = "ready" if whisper_model else "not_loaded"
+    whisper_status = "ready" if 'whisper_transcribe' in TOOL_REGISTRY else "not_loaded"
     
     return jsonify({
         "status": "healthy",
@@ -94,26 +85,26 @@ def transcribe_audio():
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_file:
             file.save(tmp_file.name)
             
-            # Transcribe using Whisper
-            if whisper_model:
-                result = whisper_model.transcribe(tmp_file.name)
-                
-                # Clean up temp file
-                os.unlink(tmp_file.name)
+            try:
+                # Use the WhisperTranscribeTool from the toolbox
+                result = TOOL_REGISTRY['whisper_transcribe'].run(file_path=tmp_file.name)
                 
                 return jsonify({
                     "success": True,
                     "deal_id": deal_id,
                     "filename": file.filename,
                     "transcription": result["text"],
-                    "segments": result.get("segments", []),
-                    "processing_time": result.get("processing_time", 0)
+                    "segments": result["segments"],
+                    "duration": result["duration"],
+                    "cost_estimate": result["cost_estimate"]
                 })
-            else:
-                return jsonify({"error": "Whisper model not loaded"}), 500
+                
+            finally:
+                # Clean up temp file
+                os.unlink(tmp_file.name)
                 
     except Exception as e:
-        print(f"Transcription error: {e}")
+        logger.error(f"Transcription error: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
@@ -515,12 +506,5 @@ def get_excel_links(chunk_id):
 
 if __name__ == '__main__':
     print("🚀 DealMate Agent Server Starting...")
-    
-    # Load Whisper model
-    whisper_loaded = load_whisper_model()
-    
-    if not whisper_loaded:
-        print("⚠️  Whisper model failed to load, audio transcription won't work")
-    
     print("✅ Server ready!")
     app.run(host='0.0.0.0', port=8000, debug=False)

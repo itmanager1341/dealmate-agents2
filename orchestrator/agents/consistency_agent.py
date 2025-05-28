@@ -2,9 +2,10 @@
 # Agent to identify inconsistencies between CIM narrative, financials, and risk disclosures
 
 from orchestrator.base_agent import BaseAgent
+from orchestrator.tools import Tool, TOOL_REGISTRY
 import re
 import json
-from typing import Optional
+from typing import Optional, Dict
 
 class ConsistencyAgent(BaseAgent):
     """
@@ -12,15 +13,28 @@ class ConsistencyAgent(BaseAgent):
     narrative claims, financial performance, and risk disclosures.
     """
 
-    def __init__(self, user_id: Optional[str] = None, deal_id: Optional[str] = None):
+    def __init__(
+        self,
+        agent_name: str = "consistency_agent",
+        user_id: Optional[str] = None,
+        deal_id: Optional[str] = None,
+        toolbox: Dict[str, Tool] = None
+    ):
         """
         Initialize the consistency agent.
         
         Args:
+            agent_name: Name of the agent
             user_id: Optional user ID for model configuration
             deal_id: Optional deal ID for model configuration
+            toolbox: Optional dictionary of tools to use. Defaults to TOOL_REGISTRY.
         """
-        super().__init__(agent_name="consistency_agent", user_id=user_id, deal_id=deal_id)
+        super().__init__(
+            agent_name=agent_name,
+            user_id=user_id,
+            deal_id=deal_id,
+            toolbox=toolbox
+        )
 
     def _get_use_case(self) -> str:
         """

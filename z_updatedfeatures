@@ -1,0 +1,8 @@
+| Theme                | Concrete change in the `dealmate-agents2` repo                                                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tool abstraction** | Break helpers into `Tool` subclasses (`pdf_to_text`, `excel_to_json`, `whisper_transcribe`, etc.).  Agents receive a `toolbox` and call tools instead of embedding raw logic.         |
+| **Reasoning layer**  | Add `PlanningAgent` that writes a plan, dispatches worker agents (`financial`, `risk`, `memo`, `consistency`), then calls a small `CriticAgent` to score outputs and retry if needed. |
+| **Cost controls**    | Token-trimming, caching of finished LLM calls in `ai_outputs`, optional “scout” runs on GPT-3.5 to decide whether GPT-4 is needed.                                                    |
+| **Scheduling**       | New `scheduled_runs` table plus a Supabase `pg_cron` worker Edge Function that fires long or timed runs.                                                                              |
+| **Observability**    | New `agent_runs` table; decorator logs tokens, duration, cost.  Simple Lovable dashboard will read from this.                                                                         |
+| **ID integrity**     | All Edge Functions must forward `user_id`, `deal_id`, `document_id`; Flask verifies FK relationships before processing.  FK constraints added in the schema.                          |
