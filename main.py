@@ -373,6 +373,9 @@ def process_cim():
                 memo_output_to_insert = memo_result["output"]
                 if isinstance(memo_output_to_insert, dict):
                     memo_output_to_insert['deal_id'] = deal_id # Add deal_id
+                    # Remove 'error' key if present
+                    if 'error' in memo_output_to_insert:
+                        del memo_output_to_insert['error']
                     db_response = supabase.table('cim_analysis').insert(memo_output_to_insert).execute()
                     inserted_data_counts["cim_analysis"] = len(db_response.data) if db_response.data else 0
                 else:
