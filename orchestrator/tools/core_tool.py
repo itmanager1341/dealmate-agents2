@@ -19,6 +19,7 @@ class ModelUseCase(str, Enum):
     TRANSCRIPTION = "transcription"
     PLANNING = "planning"
     CRITIC = "critic"
+    EXCEL_ANALYSIS = "excel_analysis"
 
 
 class Tool(ABC):
