@@ -23,6 +23,16 @@ wheels/
 .installed.cfg
 *.egg
 
+# Test files
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.tox/
+nosetests.xml
+coverage/
+
 # Temporary files
 *.tmp
 *.log
