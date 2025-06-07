@@ -7,6 +7,8 @@ from orchestrator.agents.financial_agent import FinancialAgent
 from orchestrator.agents.risk_agent import RiskAgent
 from orchestrator.agents.memo_agent import MemoAgent
 from orchestrator.agents.consistency_agent import ConsistencyAgent
+from orchestrator.agents.quote_agent import QuoteAgent
+from orchestrator.agents.chart_agent import ChartAgent
 from orchestrator.tools import TOOL_REGISTRY
 
 class CIMOrchestrator:
@@ -57,6 +59,18 @@ class CIMOrchestrator:
                 toolbox=self.toolbox
             )
         }
+        self.quote_agent = QuoteAgent(
+            agent_name="quote_agent",
+            user_id=user_id,
+            deal_id=deal_id,
+            toolbox=self.toolbox
+        )
+        self.chart_agent = ChartAgent(
+            agent_name="chart_agent",
+            user_id=user_id,
+            deal_id=deal_id,
+            toolbox=self.toolbox
+        )
 
     def load_pdf_text(self, file_path: str) -> str:
         """
@@ -278,8 +292,84 @@ class CIMOrchestrator:
             # Process chunks
             await self.process_chunks_with_agents(stored_chunks)
             
+            # Process quotes
+            quote_results = await self.quote_agent.process(text)
+            if quote_results and "output_json" in quote_results:
+                await self._save_quote_results(quote_results["output_json"], document_id)
+            
+            # Process chart
+            chart_results = await self.chart_agent.process(text)
+            if chart_results and "output_json" in chart_results:
+                await self._save_chart_results(chart_results["output_json"], document_id)
+            
             return {"status": "success", "chunks_processed": len(stored_chunks)}
             
         except Exception as e:
             logger.error(f"Error processing document {document_id}: {str(e)}")
             return {"status": "error", "error": str(e)}
+
+    async def _save_quote_results(self, results: dict, document_id: str):
+        """
+        Save quote analysis results to the database.
+        
+        Args:
+            results: The quote analysis results
+            document_id: The ID of the document being processed
+        """
+        from models.quote import DocumentQuote, QuoteRelationship
+        from models.document import Document
+        
+        document = await Document.get(document_id)
+        if not document:
+            return
+            
+        for quote_data in results.get("quotes", []):
+            quote = DocumentQuote(
+                deal_id=self.deal_id,
+                document_id=document_id,
+                quote_text=quote_data["quote_text"],
+                speaker=quote_data["speaker"],
+                speaker_title=quote_data["speaker_title"],
+                context=quote_data["context"],
+                significance_score=quote_data["significance_score"],
+                quote_type=quote_data["quote_type"],
+                metadata=quote_data["metadata"]
+            )
+            await quote.save()
+            
+            # Save quote relationships
+            for rel_data in results.get("quote_relationships", []):
+                if rel_data["quote_id"] == quote.id:
+                    relationship = QuoteRelationship(
+                        quote_id=quote.id,
+                        related_metric=rel_data["related_metric"],
+                        relationship_type=rel_data["relationship_type"],
+                        confidence_score=rel_data["confidence_score"]
+                    )
+                    await relationship.save()
+
+    async def _save_chart_results(self, results: dict, document_id: str):
+        """Save chart analysis results to the database."""
+        try:
+            # Insert chart elements
+            for chart in results.get("charts", []):
+                chart["document_id"] = document_id
+                chart["deal_id"] = self.deal_id
+                
+                # Insert chart element
+                chart_response = self.supabase.table("chart_elements").insert(chart).execute()
+                if not chart_response.data:
+                    raise ValueError(f"Failed to insert chart: {chart}")
+                
+                chart_id = chart_response.data[0]["id"]
+                
+                # Insert relationships
+                for relationship in chart.get("relationships", []):
+                    relationship["chart_id"] = chart_id
+                    rel_response = self.supabase.table("chart_relationships").insert(relationship).execute()
+                    if not rel_response.data:
+                        raise ValueError(f"Failed to insert chart relationship: {relationship}")
+        
+        except Exception as e:
+            self.logger.error(f"Error saving chart results: {str(e)}")
+            raise
